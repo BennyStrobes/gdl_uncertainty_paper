@@ -227,7 +227,7 @@ gene_id_to_causal_effects = create_mapping_from_gene_id_to_causal_effects(causal
 
 # Open output file handle
 t = gzip.open(est_eqtl_effect_size_file, 'wt')
-t.write('gene\tvariant\tchr\tsnp_pos\tA0\tA1\teqtl_effect_size\teqtl_effect_size_se\tN\tmaf\tgenotype_sdev\n')
+t.write('gene\tvariant\tchr\tsnp_pos\tA0\tA1\teqtl_effect_size\teqtl_effect_size_se\tN\tmaf\tdist_to_tss\tgenotype_sdev\n')
 
 # Open output file handle
 t_indi = gzip.open(individual_expression_file, 'wt')
@@ -362,7 +362,7 @@ for chrom_num in range(1,23):
 
 		# Print to output file
 		for var_iter, variant_id in enumerate(cis_variant_names):
-			t.write(gene_name + '\t' + variant_id + '\t' + str(cis_variant_chroms[var_iter]) + '\t' + str(cis_variant_poss[var_iter]) + '\t' + cis_variant_a0s[var_iter] + '\t' + cis_variant_a1s[var_iter] + '\t' + str(eqtl_beta[var_iter]) + '\t' + str(eqtl_beta_se[var_iter]) + '\t' + str(n_samp) + '\t' + str(mafs[var_iter]) + '\t' + str(genotype_sdevs[var_iter]) + '\n')
+			t.write(gene_name + '\t' + variant_id + '\t' + str(cis_variant_chroms[var_iter]) + '\t' + str(cis_variant_poss[var_iter]) + '\t' + cis_variant_a0s[var_iter] + '\t' + cis_variant_a1s[var_iter] + '\t' + str(eqtl_beta[var_iter]) + '\t' + str(eqtl_beta_se[var_iter]) + '\t' + str(n_samp) + '\t' + str(mafs[var_iter]) + '\t' + '0.0' + '\t' + str(genotype_sdevs[var_iter]) + '\n')
 
 		# Print to individual output file
 		for indi_iter, indi_expr in enumerate(gene_expression):

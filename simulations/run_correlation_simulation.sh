@@ -48,8 +48,6 @@ echo "PART 2.5"
 simulation_parameter_summary_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}"_sim_variant_gene_annotations_"${n_anno}"_true_sim_effect_summary.txt"
 python calculate_true_simulated_calibration_effect_sizes_and_correlation.py $est_borzoi_standardized_effect_size_file $sim_variant_gene_annotation_file $causal_variant_gene_effect_size_file $simulation_parameter_summary_file
 
-
-
 ####################################################
 # Part 3: Simulate estimated eqtl effect sizes
 ####################################################
@@ -64,7 +62,6 @@ conda activate susie
 python simulate_eqtl_analysis.py $causal_variant_gene_effect_size_file $est_eqtl_effect_size_file $gene_ld_summary_file $onek_genomes_plink_filestem $eqtl_sample_size $simulation_iter $ind_expr_file $susie_fine_mapping_file $genotype_sample_mapping_file
 
 
-
 ####################################################
 # Part 4: Simulate estimated eqtl effect sizes
 ####################################################
@@ -74,8 +71,6 @@ est_borzoi_effect_size_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}
 source ~/.bashrc
 conda activate plink_env
 python convert_borzoi_standardized_effects_to_per_allele_effects.py $est_eqtl_effect_size_file $est_borzoi_standardized_effect_size_file $est_borzoi_effect_size_file
-
-
 
 
 ####################################################
@@ -95,7 +90,6 @@ python ${sldmc_code_dir}sldmc.py \
     --ld-corr-output-stem $ld_corr_output_stem 
 
 
-
 ####################################################
 # Part 6: Run correlations based on only fine-mapped snps
 ####################################################
@@ -108,3 +102,4 @@ python run_fine_map_corr.py $est_borzoi_standardized_effect_size_file $susie_fin
 
 
 date
+
