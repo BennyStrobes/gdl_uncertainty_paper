@@ -6,7 +6,7 @@ import argparse
 
 
 # Bins used when stratifying every annotation by borzoi magnitude (matches the 'borzoi_magnitude_bins' annotation)
-borzoi_magnitude_stratification_bins = [0.0, 0.001, 0.01, 0.075, 0.2, 10.0]
+borzoi_magnitude_stratification_bins = [0.0, 0.001, 0.01, 0.075, 0.2, np.inf]
 
 # Annotations of these kinds are already a deterministic function of borzoi magnitude, so
 # crossing them with magnitude bins again would leave most of the interaction categories empty
@@ -105,15 +105,19 @@ def create_custom_annotation_config(anno_name):
 		anno_config['category_names'] = ['intercept']
 	elif anno_name == 'borzoi_magnitude_bins':
 		anno_config['kind'] = 'borzoi_magnitude'
-		anno_config['bins'] = [0.0, 0.001, 0.01, 0.075, 0.2, 10.0]
+		anno_config['bins'] = [0.0, 0.001, 0.01, 0.075, 0.2, np.inf]
+		anno_config['category_names'] = create_one_hot_category_names(anno_config['bins'], 'magnitude_bin')
+	elif anno_name == 'borzoi_finer_magnitude_bins':
+		anno_config['kind'] = 'borzoi_magnitude'
+		anno_config['bins'] = [0.0, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4, np.inf]
 		anno_config['category_names'] = create_one_hot_category_names(anno_config['bins'], 'magnitude_bin')
 	elif anno_name == 'borzoi_effect_size_bins':
 		anno_config['kind'] = 'borzoi_effect_size'
-		anno_config['bins'] = [-10.0, -0.2, -0.075, -0.01, -0.001, 0.0, 0.001, 0.01, 0.075, 0.2, 10.0]
+		anno_config['bins'] = [-np.inf, -0.2, -0.075, -0.01, -0.001, 0.0, 0.001, 0.01, 0.075, 0.2, np.inf]
 		anno_config['category_names'] = create_one_hot_category_names(anno_config['bins'], 'effect_size_bin')
 	elif anno_name == 'borzoi_finer_effect_size_bins':
 		anno_config['kind'] = 'borzoi_effect_size'
-		anno_config['bins'] = [-10.0, -0.25, -.1, -0.04, -0.01, -0.001, 0.0, 0.001, 0.01, 0.04, .1, 0.25, 10.0]
+		anno_config['bins'] = [-np.inf, -0.4, -0.2, -0.1, -0.05, -0.025, -0.01, -0.005, -0.001, 0.0, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4, np.inf]
 		anno_config['category_names'] = create_one_hot_category_names(anno_config['bins'], 'effect_size_bin')
 	elif anno_name == 'dist_to_tss_bins':
 		anno_config['kind'] = 'vg_pair_info'
@@ -133,13 +137,13 @@ def create_custom_annotation_config(anno_name):
 	elif anno_name == 'borzoi_magnitude_binsXaf_bins':
 		anno_config['kind'] = 'borzoi_magnitudeXvg_pair_info'
 		anno_config['vg_pair_info_index'] = 0
-		anno_config['bins'] = [0.0, 0.001, 0.01, 0.075, 0.2, 10.0]
+		anno_config['bins'] = [0.0, 0.001, 0.01, 0.075, 0.2, np.inf]
 		anno_config['other_bins'] = [0.0, 0.05, 0.1, 0.2, 0.3, 0.500001]
 		anno_config['category_names'] = create_interaction_category_names(anno_config['bins'], anno_config['other_bins'], 'maf_bin')
 	elif anno_name == 'borzoi_magnitude_binsXdist_to_tss_bins':
 		anno_config['kind'] = 'borzoi_magnitudeXvg_pair_info'
 		anno_config['vg_pair_info_index'] = 1
-		anno_config['bins'] = [0.0, 0.001, 0.01, 0.075, 0.2, 10.0]
+		anno_config['bins'] = [0.0, 0.001, 0.01, 0.075, 0.2, np.inf]
 		anno_config['other_bins'] = [0.0, 5000.0, 50000.0, 100001.0]
 		anno_config['category_names'] = create_interaction_category_names(anno_config['bins'], anno_config['other_bins'], 'dist_to_tss_bin')
 	else:
