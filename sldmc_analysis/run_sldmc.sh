@@ -21,7 +21,7 @@ conda activate plink_env
 date
 echo $ld_corr_output_stem
 
-python ${sldmc_code_dir}run_sldmc.py \
+python ${sldmc_code_dir}sldmc.py \
 	--est-borzoi-effect-size-file $borzoi_effect_file \
 	--est-eqtl-effect-size-file $eqtl_effects_file \
 	--sim-variant-gene-annotation-file $borzoi_annotation_file \
