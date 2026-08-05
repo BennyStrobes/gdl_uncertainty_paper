@@ -33,6 +33,9 @@ annotation_name_file="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_pape
 # Gene set anno file
 gene_set_anno_file="/lab-share/CHIP-Strober-e2/Public/gene_set_annotations/non_disease_specific_geneset.csv"
 
+# Directory containing SLDMC code
+sldmc_code_dir="/lab-share/CHIP-Strober-e2/Public/ben/SLDMC/"
+
 #################
 # Output directories
 #################
@@ -87,8 +90,6 @@ fi
 
 
 
-
-
 #################
 # 4. Generate cross tissue gene sets (and bootstrapped gene sets)
 #################
@@ -111,11 +112,10 @@ tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r ori
 	for annotation_version in $annotation_versions; do
 		borzoi_annotation_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_annotations_"${annotation_version}".txt.gz"
 		sldmc_output_stem=${sldmc_results_output_dir}"sldmc_results_"${target_tissue}"_"${target_sample}"_"${annotation_version}
-		sbatch run_sldmc.sh $borzoi_effect_file $eqtl_sumstats_file $borzoi_annotation_file $genotype_stem $genotype_sample_mapping_file ${bootstrapped_cross_tissue_gene_sets_dir}"cross_tissue_gene_set_bootstrap_" $sldmc_output_stem
+		sbatch run_sldmc.sh $borzoi_effect_file $eqtl_sumstats_file $borzoi_annotation_file $genotype_stem $genotype_sample_mapping_file ${bootstrapped_cross_tissue_gene_sets_dir}"cross_tissue_gene_set_bootstrap_" $sldmc_output_stem $sldmc_code_dir
 	done
 done
 fi
-
 
 #################
 # 6. Meta-analyze ld-corr results across tissues
