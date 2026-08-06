@@ -166,5 +166,5 @@ fi
 if false; then
 source ~/.bashrc
 conda activate plink_env
-fi
 Rscript visualize_sldmc_results.R ${sldmc_results_output_dir} $simulation_results_dir $borzoi_gtex_unique_target_names_file $visualize_sldmc_results_dir $annotation_name_file $simulation_oracle_results_dir
+fi
