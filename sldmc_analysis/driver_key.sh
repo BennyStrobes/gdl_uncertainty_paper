@@ -22,7 +22,8 @@ eqtl_sumstats_dir="/lab-share/CHIP-Strober-e2/Public/ben/s2e_uncertainty/gtex_eq
 gtex_v10_pc_genes_gtf="/lab-share/CHIP-Strober-e2/Public/gene_annotation_files/gencode.v39.gtex.protein_coding.genes.gtf"
 
 # Simulation results directory (for paper visualization purposes)
-simulation_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/s2e_uncertainty/simulations/corr_sim_inference_results/"
+simulation_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/simulations/corr_sim_inference_results/"
+simulation_oracle_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/simulations/corr_sim_borzoi_eqtl_effects/"
 
 # Baseline LD annotations directory (used for variant annotations)
 baselineLD_anno_dir="/lab-share/CHIP-Strober-e2/Public/ldsc/reference_files/1000G_EUR_Phase3_hg38/baselineLD_v2.2/"
@@ -165,6 +166,5 @@ fi
 if false; then
 source ~/.bashrc
 conda activate plink_env
-
-Rscript visualize_sldmc_results.R ${sldmc_results_output_dir} $simulation_results_dir $borzoi_gtex_unique_target_names_file $visualize_sldmc_results_dir $annotation_name_file
 fi
+Rscript visualize_sldmc_results.R ${sldmc_results_output_dir} $simulation_results_dir $borzoi_gtex_unique_target_names_file $visualize_sldmc_results_dir $annotation_name_file $simulation_oracle_results_dir

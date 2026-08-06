@@ -65,8 +65,7 @@ fi
 
 
 
-if false; then
 source ~/.bashrc
 conda activate plink_env
 Rscript visualize_corr_simulation_results.R $correlation_inference_results_dir $correlation_borzoi_est_effect_dir $correlation_visualization_dir
-fi
+
