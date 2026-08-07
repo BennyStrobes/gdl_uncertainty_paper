@@ -161,6 +161,29 @@ fi
 
 
 #################
+# 5.Tissue permuted run of S-LDMC
+#################
+if false; then
+tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
+	eqtl_sumstats_file=$eqtl_sumstats_dir"eqtl_results_"${target_tissue}"_sumstats.txt.gz"
+	genotype_sample_mapping_file=$processed_genotype_data_dir"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
+	borzoi_effect_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
+	genotype_stem=$processed_genotype_data_dir"gtex_v9_eqtl_chr"
+
+	annotation_version="default"
+	borzoi_annotation_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_annotations_"${annotation_version}".txt.gz"
+	sldmc_output_stem=${sldmc_results_output_dir}"sldmc_results_"${target_tissue}"_"${target_sample}"_"${annotation_version}
+	sbatch run_sldmc.sh $borzoi_effect_file $eqtl_sumstats_file $borzoi_annotation_file $genotype_stem $genotype_sample_mapping_file ${bootstrapped_cross_tissue_gene_sets_dir}"cross_tissue_gene_set_bootstrap_" $sldmc_output_stem $sldmc_code_dir
+done
+fi
+
+
+
+
+
+
+
+#################
 # 7. Visualize results
 #################
 if false; then

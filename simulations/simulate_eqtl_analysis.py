@@ -215,6 +215,8 @@ susie_fine_mapping_file = sys.argv[8] if len(sys.argv) > 8 else None
 genotype_sample_mapping_file = sys.argv[9] if len(sys.argv) > 9 else None
 susie_r_script = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'run_susie_fine_mapping.R')
 
+if susie_fine_mapping_file == "None":
+	susie_fine_mapping_file = None
 
 
 # set random seed

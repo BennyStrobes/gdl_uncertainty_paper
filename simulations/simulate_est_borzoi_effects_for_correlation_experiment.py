@@ -81,7 +81,7 @@ for line in f:
 	anno_vec = np.zeros(n_anno)
 
 	if gene_id not in gene_to_probs:
-		probs = np.random.dirichlet(np.ones(n_anno)*.25, size=None)
+		probs = np.random.dirichlet(np.ones(n_anno), size=None)
 		gene_to_probs[gene_id] = probs
 
 	anno_index = np.random.choice(n_anno, p=gene_to_probs[gene_id])
@@ -93,7 +93,7 @@ for line in f:
 
 	gaussian_error = np.random.normal(loc=0,scale=np.sqrt(.005))
 
-	standardized_borzoi_effect = (3.0*gaussian_prop_grid[anno_index]*effect_size + (1.0-gaussian_prop_grid[anno_index])*gaussian_error) + constant_small_gaussian_error
+	standardized_borzoi_effect = ((3.0*gaussian_prop_grid[anno_index]*effect_size + (1.0-gaussian_prop_grid[anno_index])*gaussian_error) + constant_small_gaussian_error)/3.0
 
 	t.write(gene_id + '\t' + variant_id + '\t' + chromer + '\t' + snp_pos + '\t' + a0 + '\t' + a1 + '\t' + str(standardized_borzoi_effect) + '\n')
 
