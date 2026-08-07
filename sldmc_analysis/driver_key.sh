@@ -49,6 +49,8 @@ bootstrapped_cross_tissue_gene_sets_dir=${output_root}"bootstrapped_gene_sets/"
 
 sldmc_results_output_dir=${output_root}"sldmc_results/"
 
+tissue_permuted_sldmc_results_output_dir=${output_root}"tissue_permuted_sldmc_results/"
+
 visualize_sldmc_results_dir=${output_root}"visualize_sldmc/"
 
 
@@ -163,20 +165,35 @@ fi
 #################
 # 5.Tissue permuted run of S-LDMC
 #################
+
+
+# a. Draw the permuted pairing: one row per tissue, holding that tissue plus a randomly drawn partner
+# tissue/sample. Written once and reused, so every downstream permuted run uses the same pairing.
+tissue_permuted_pairs_file=${tissue_permuted_sldmc_results_output_dir}"tissue_permuted_pairs.txt"
 if false; then
-tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
+python generate_tissue_permuted_pairs.py \
+	--borzoi-gtex-unique-target-names-file $borzoi_gtex_unique_target_names_file \
+	--tissue-permuted-pairs-output-file $tissue_permuted_pairs_file \
+	--seed 0
+fi
+
+# b. Run S-LDMC on each permuted pair: eQTL sumstats and genotype sample mapping come from the tissue
+# (the LD has to match the eQTL sample), while the borzoi effects and borzoi annotations come from the
+# randomly drawn partner tissue. Output stems carry both tissues so they cannot collide with the
+# matched results in sldmc_results_output_dir.
+if false; then
+tail -n +2 "$tissue_permuted_pairs_file" | while IFS=$'\t' read -r target_tissue target_sample permuted_tissue permuted_sample; do
 	eqtl_sumstats_file=$eqtl_sumstats_dir"eqtl_results_"${target_tissue}"_sumstats.txt.gz"
 	genotype_sample_mapping_file=$processed_genotype_data_dir"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
-	borzoi_effect_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
+	borzoi_effect_file=${borzoi_output_dir}${permuted_tissue}"_"${permuted_sample}"_borzoi_effects.txt.gz"
 	genotype_stem=$processed_genotype_data_dir"gtex_v9_eqtl_chr"
 
 	annotation_version="default"
-	borzoi_annotation_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_annotations_"${annotation_version}".txt.gz"
-	sldmc_output_stem=${sldmc_results_output_dir}"sldmc_results_"${target_tissue}"_"${target_sample}"_"${annotation_version}
+	borzoi_annotation_file=${borzoi_output_dir}${permuted_tissue}"_"${permuted_sample}"_annotations_"${annotation_version}".txt.gz"
+	sldmc_output_stem=${tissue_permuted_sldmc_results_output_dir}"sldmc_results_eqtl_"${target_tissue}"_borzoi_"${permuted_tissue}"_"${permuted_sample}"_"${annotation_version}
 	sbatch run_sldmc.sh $borzoi_effect_file $eqtl_sumstats_file $borzoi_annotation_file $genotype_stem $genotype_sample_mapping_file ${bootstrapped_cross_tissue_gene_sets_dir}"cross_tissue_gene_set_bootstrap_" $sldmc_output_stem $sldmc_code_dir
 done
 fi
-
 
 
 
