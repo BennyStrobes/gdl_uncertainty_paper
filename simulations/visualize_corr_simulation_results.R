@@ -33,6 +33,13 @@ figure_theme <- function() {
 	)
 }
 
+# Annotations arrive as annoN names but are displayed as numbered simulated categories (1, 2, ...),
+# following the order of the supplied factor levels.
+annotation_x_scale <- function(annotation_levels) {
+	return(scale_x_discrete(labels=setNames(as.character(seq_along(annotation_levels)), annotation_levels)))
+}
+annotation_x_label <- "Simulated annotation category"
+
 make_bias_barplot <- function(summary_df, plot_title) {
 	summary_df$annotation_name <- factor(summary_df$annotation_name, levels=summary_df$annotation_name)
 	summary_df$xpos <- seq_len(nrow(summary_df))
@@ -42,11 +49,11 @@ make_bias_barplot <- function(summary_df, plot_title) {
 			geom_errorbar(aes(ymin=ci_lower, ymax=ci_upper), width=.16, linewidth=.45, color="#22313B") +
 			geom_segment(aes(x=xpos-.30, xend=xpos+.30, y=true_simulated_value, yend=true_simulated_value), color="#D06A4B", linetype="dashed", linewidth=.75, inherit.aes=FALSE) +
 			geom_point(aes(y=true_simulated_value), color="#D06A4B", size=1.8, inherit.aes=TRUE) +
-			xlab("") +
+			annotation_x_scale(levels(summary_df$annotation_name)) +
+			xlab(annotation_x_label) +
 			ylab("Value") +
 			ggtitle(plot_title) +
-			figure_theme() +
-			theme(axis.text.x=element_text(angle=35, hjust=1, vjust=1))
+			figure_theme()
 	)
 }
 
@@ -66,12 +73,13 @@ make_coverage_plot <- function(coverage_df, plot_title) {
 			geom_point(size=2, position=position_dodge(width=dodge_width)) +
 			geom_hline(aes(yintercept=nominal_coverage, color=coverage_label), linetype="dotted", linewidth=.6, show.legend=FALSE) +
 			scale_color_manual(values=c("90%"="#4C78A8", "95%"="#D06A4B", "99%"="#7A5EA6"), name="") +
-			xlab("") +
+			annotation_x_scale(levels(coverage_df$annotation_name)) +
+			xlab(annotation_x_label) +
 			ylab("Coverage") +
 			ggtitle(plot_title) +
 			coord_cartesian(ylim=c(y_min, y_max)) +
 			figure_theme() +
-			theme(axis.text.x=element_text(angle=35, hjust=1, vjust=1), legend.position="right")
+			theme(legend.position="right")
 	)
 }
 
@@ -101,12 +109,13 @@ make_se_comparison_plot <- function(se_df, plot_title) {
 		ggplot(long_df, aes(x=annotation_name, y=value, fill=se_type, group=se_type)) +
 			geom_col(width=.62, color="#22313B", linewidth=.35, position=position_dodge(width=dodge_width)) +
 			geom_errorbar(aes(ymin=ci_lower, ymax=ci_upper), width=.16, linewidth=.45, color="#22313B", position=position_dodge(width=dodge_width)) +
-			scale_fill_manual(values=c("Average estimated SE"="#4C78A8", "Empirical SE"="#D06A4B"), name="") +
-			xlab("") +
+			scale_fill_manual(values=c("Average estimated SE"="#3E7A34", "Empirical SE"="#B863A0"), name="") +
+			annotation_x_scale(levels(long_df$annotation_name)) +
+			xlab(annotation_x_label) +
 			ylab("Standard error") +
 			ggtitle(plot_title) +
 			figure_theme() +
-			theme(axis.text.x=element_text(angle=35, hjust=1, vjust=1), legend.position="right")
+			theme(legend.position="right")
 	)
 }
 
@@ -119,11 +128,11 @@ make_se_ratio_plot <- function(se_df, plot_title) {
 		geom_errorbar(aes(ymin=se_ratio_ci_lower, ymax=se_ratio_ci_upper), width=.14, linewidth=.45, color="#33424F") +
 		geom_line(linewidth=.7, color="#4C78A8") +
 		geom_point(size=2, color="#22313B") +
-		xlab("") +
+		annotation_x_scale(levels(se_df$annotation_name)) +
+		xlab(annotation_x_label) +
 		ylab("Average estimated SE / empirical SE") +
 		ggtitle(plot_title) +
-		figure_theme() +
-		theme(axis.text.x=element_text(angle=35, hjust=1, vjust=1))
+		figure_theme()
 
 	ratio_values <- c(se_df$se_ratio, se_df$se_ratio_ci_lower, se_df$se_ratio_ci_upper)
 	if (all(is.finite(ratio_values)) && all(ratio_values > 0)) {
@@ -523,6 +532,7 @@ for (method in methods_list) {
 		next
 	}
 	n_methods_plotted <- n_methods_plotted + 1
+	se_plots_by_output <- list()
 
 	for (output_spec in output_specs) {
 		if (!(output_spec$output_name %in% all_estimated_results$output_name)) {
@@ -568,7 +578,21 @@ for (method in methods_list) {
 		se_comparison_plot <- make_se_comparison_plot(se_calibration_df, paste0(output_spec$label, " Standard Errors (", method$label, ")"))
 		se_comparison_plot_file <- file.path(viz_dir, paste0("estimated_", output_spec$key, "_se_comparison_plot_", method$key, ".pdf"))
 		ggsave(filename=se_comparison_plot_file, plot=se_comparison_plot, width=7.2, height=3.6)
+		se_plots_by_output[[output_spec$key]] <- se_comparison_plot
 
+	}
+
+	#################
+	# Combined standard error plot (calibration slope on top, correlation on bottom)
+	#################
+	if (!is.null(se_plots_by_output$calibration_slope) && !is.null(se_plots_by_output$correlation)) {
+		combined_se_plot <- plot_grid(
+			se_plots_by_output$calibration_slope,
+			se_plots_by_output$correlation,
+			ncol=1, align="v", axis="lr"
+		)
+		combined_se_plot_file <- file.path(viz_dir, paste0("estimated_combined_se_comparison_plot_", method$key, ".pdf"))
+		ggsave(filename=combined_se_plot_file, plot=combined_se_plot, width=7.2, height=6.0)
 	}
 }
 
