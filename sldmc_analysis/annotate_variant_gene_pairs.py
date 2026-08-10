@@ -448,6 +448,20 @@ def create_annotation_category_file(annotation_category_file, anno_configs):
 	return
 
 
+def create_annotation_category_counts_file(annotation_category_counts_file, anno_configs):
+	# Same rows as the (annotation, category) file plus the number of variant-gene pairs in each
+	# category. One extra row per annotation (category_index -1, category_name no_category) holds the
+	# pairs falling in no category of that annotation.
+	t = open(annotation_category_counts_file, 'w')
+	t.write('anno_name\tsource\tcategory_index\tcategory_name\tn_variant_gene_pairs\n')
+	for anno_config in anno_configs:
+		for category_iter, category_name in enumerate(anno_config['category_names']):
+			t.write(anno_config['anno_name'] + '\t' + anno_config['source'] + '\t' + str(category_iter) + '\t' + category_name + '\t' + str(anno_config['category_counts'][category_iter]) + '\n')
+		t.write(anno_config['anno_name'] + '\t' + anno_config['source'] + '\t-1\tno_category\t' + str(anno_config['missing_count']) + '\n')
+	t.close()
+	return
+
+
 def print_annotation_category_counts(anno_configs):
 	for anno_config in anno_configs:
 		print(anno_config['anno_name'])
@@ -487,6 +501,8 @@ stratify_by_borzoi_magnitude = args.stratify_by_borzoi_magnitude
 
 # Describes the (annotation, category) pairs making up the annotation file
 annotation_category_file = borzoi_annotation_file.split('.txt.gz')[0] + '_categories.txt'
+# Same rows plus the number of variant-gene pairs falling in each category
+annotation_category_counts_file = borzoi_annotation_file.split('.txt.gz')[0] + '_category_counts.txt'
 
 # Extract the annotations we want to include
 anno_names, anno_sources = extract_annotation_names_and_sources(annotation_name_file)
@@ -512,5 +528,8 @@ create_annotation_file(borzoi_effect_file, borzoi_annotation_file, anno_configs,
 
 # Print (annotation, category) pair file
 create_annotation_category_file(annotation_category_file, anno_configs)
+
+# Print (annotation, category) pair counts file
+create_annotation_category_counts_file(annotation_category_counts_file, anno_configs)
 
 print_annotation_category_counts(anno_configs)

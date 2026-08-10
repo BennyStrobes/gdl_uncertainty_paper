@@ -136,10 +136,141 @@ make_sldmc_magnitude_stratified_bar_plot <- function(df, base_annotation_name, o
 }
 
 
-per_tissue_sldmc_magnitude_results <- function(sldmc_results_output_dir, tissue_info_df, annotation_version="default") {
+make_sldmc_base_by_magnitude_bar_plot <- function(df, base_annotation_name, output_name, ylab, base_xlab, bar_color, base_bin_labels) {
+	# Transposed view of make_sldmc_magnitude_stratified_bar_plot: x-axis is the base annotation's bins
+	# (e.g. distance to TSS), and within each base bin the borzoi magnitude bins are shown as separate
+	# colored, dodged bars (darker = higher magnitude bin). Reads the same magnitude_stratified file:
+	# annotation borzoi_magnitude_stratifiedX<base>, categories magnitude_bin<m>X<base_bin>.
+	stratified_annotation_name = paste0("borzoi_magnitude_stratifiedX", base_annotation_name)
+	plot_df = df[df$annotation_name == stratified_annotation_name & df$output_name == output_name, ]
+	if (nrow(plot_df) == 0) {
+		stop(paste("No", stratified_annotation_name, "rows found for output", output_name))
+	}
+	plot_df$magnitude_bin_id = suppressWarnings(as.numeric(sub("^magnitude_bin([0-9]+)X.*", "\\1", plot_df$category_name)))
+	plot_df$base_bin_id = suppressWarnings(as.numeric(sub(".*[^0-9]([0-9]+)$", "\\1", plot_df$category_name)))
+
+	magnitude_bin_labels = c("<0.001", "0.001-0.01", "0.01-0.075", "0.075-0.2", ">=0.2")
+	magnitude_ids = sort(unique(plot_df$magnitude_bin_id))
+	base_ids = sort(unique(plot_df$base_bin_id))
+	magnitude_labels_use = if (length(magnitude_ids) == length(magnitude_bin_labels)) magnitude_bin_labels else paste0("mag bin", magnitude_ids)
+	base_labels_use = if (length(base_ids) == length(base_bin_labels)) base_bin_labels else paste0("bin", base_ids)
+
+	plot_df$magnitude_bin = factor(plot_df$magnitude_bin_id, levels=magnitude_ids, labels=magnitude_labels_use)
+	plot_df$base_bin = factor(plot_df$base_bin_id, levels=base_ids, labels=base_labels_use)
+	# Gaussian approximation confidence intervals
+	plot_df$ci_lower = plot_df$mean - 1.96*plot_df$bootstrap_se
+	plot_df$ci_upper = plot_df$mean + 1.96*plot_df$bootstrap_se
+
+	# Shades of the metric's base color, one per magnitude bin (light -> bar_color)
+	magnitude_colors = colorRampPalette(c("white", bar_color))(length(magnitude_ids) + 1)[-1]
+	return(
+		ggplot(plot_df, aes(x=base_bin, y=mean, fill=magnitude_bin)) +
+		geom_col(position=position_dodge(width=.8), width=.72, color="#111827", linewidth=.2) +
+		geom_errorbar(aes(ymin=ci_lower, ymax=ci_upper), position=position_dodge(width=.8), width=.18, linewidth=.35, color="#111827") +
+		geom_hline(yintercept=0, linewidth=.4, color="#6B7280", linetype="dashed") +
+		scale_fill_manual(values=magnitude_colors, name="Borzoi magnitude bin") +
+		scale_y_continuous(labels=number_format(accuracy=.01)) +
+		xlab(base_xlab) +
+		ylab(ylab) +
+		figure_theme() +
+		theme(
+			legend.position="right",
+			legend.title=element_text(face="bold"),
+			axis.text.x=element_text(angle=35, hjust=1, vjust=1),
+			plot.margin=margin(8, 14, 8, 8)
+		)
+	)
+}
+
+
+load_dist_to_tss_by_magnitude_bin_counts <- function(borzoi_annotation_dir, tissue_info_df) {
+	# Sum, across tissues, the number of variant-gene pairs in each (borzoi magnitude bin, distance to
+	# TSS bin) cell, read from the per-tissue annotation category-counts files
+	# (<tissue>_<sample>_annotations_magnitude_stratified_category_counts.txt, written by
+	# annotate_variant_gene_pairs.py). Returns one row per magnitude_bin<m>Xdist_to_tss_bin<b> cell.
+	summed_counts = NULL
+	for (row_iter in seq_len(nrow(tissue_info_df))) {
+		target_tissue = tissue_info_df$GTEx_tissue[row_iter]
+		target_sample = tissue_info_df$target_identifier[row_iter]
+		counts_file = paste0(borzoi_annotation_dir, target_tissue, "_", target_sample, "_annotations_magnitude_stratified_category_counts.txt")
+		if (file.exists(counts_file) == FALSE) {
+			print(paste("WARNING: annotation category counts file not found; skipping:", counts_file))
+			next
+		}
+		counts_df = read.table(counts_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+		counts_df = counts_df[counts_df$anno_name == "borzoi_magnitude_stratifiedXdist_to_tss_bins" & counts_df$category_index >= 0, ]
+		if (nrow(counts_df) == 0) {
+			print(paste("WARNING: no borzoi_magnitude_stratifiedXdist_to_tss_bins rows in", counts_file))
+			next
+		}
+		counts_df = counts_df[order(counts_df$category_index), ]
+		if (is.null(summed_counts)) {
+			summed_counts = counts_df[, c("category_name", "n_variant_gene_pairs")]
+		} else {
+			if (all(summed_counts$category_name == counts_df$category_name) == FALSE) {
+				stop(paste("Category names in", counts_file, "don't match the other tissues'"))
+			}
+			summed_counts$n_variant_gene_pairs = summed_counts$n_variant_gene_pairs + counts_df$n_variant_gene_pairs
+		}
+	}
+	if (is.null(summed_counts)) {
+		stop(paste("No annotation category counts files loaded from", borzoi_annotation_dir))
+	}
+	return(summed_counts)
+}
+
+
+make_magnitude_fraction_by_dist_to_tss_plot <- function(counts_df, base_xlab, bar_color, base_bin_labels) {
+	# Dodged bar plot of the fraction of variant-gene pairs falling in each borzoi magnitude bin,
+	# computed separately within each distance to TSS bin (so fractions sum to one within a distance
+	# bin; darker = higher magnitude bin). Expects the summed counts df from
+	# load_dist_to_tss_by_magnitude_bin_counts.
+	plot_df = counts_df
+	plot_df$magnitude_bin_id = suppressWarnings(as.numeric(sub("^magnitude_bin([0-9]+)X.*", "\\1", plot_df$category_name)))
+	plot_df$base_bin_id = suppressWarnings(as.numeric(sub(".*[^0-9]([0-9]+)$", "\\1", plot_df$category_name)))
+
+	magnitude_bin_labels = c("<0.001", "0.001-0.01", "0.01-0.075", "0.075-0.2", ">=0.2")
+	magnitude_ids = sort(unique(plot_df$magnitude_bin_id))
+	base_ids = sort(unique(plot_df$base_bin_id))
+	magnitude_labels_use = if (length(magnitude_ids) == length(magnitude_bin_labels)) magnitude_bin_labels else paste0("mag bin", magnitude_ids)
+	base_labels_use = if (length(base_ids) == length(base_bin_labels)) base_bin_labels else paste0("bin", base_ids)
+
+	plot_df$magnitude_bin = factor(plot_df$magnitude_bin_id, levels=magnitude_ids, labels=magnitude_labels_use)
+	plot_df$base_bin = factor(plot_df$base_bin_id, levels=base_ids, labels=base_labels_use)
+	base_bin_totals = ave(plot_df$n_variant_gene_pairs, plot_df$base_bin_id, FUN=sum)
+	plot_df$fraction = plot_df$n_variant_gene_pairs / base_bin_totals
+	# 95% binomial proportion confidence intervals (normal approximation). Note these treat the pairs
+	# as independent draws, so they ignore the correlation of pairs shared across tissues.
+	plot_df$fraction_se = sqrt(plot_df$fraction*(1.0 - plot_df$fraction)/base_bin_totals)
+	plot_df$ci_lower = plot_df$fraction - 1.96*plot_df$fraction_se
+	plot_df$ci_upper = plot_df$fraction + 1.96*plot_df$fraction_se
+
+	# Shades of the base color, one per magnitude bin (light -> bar_color)
+	magnitude_colors = colorRampPalette(c("white", bar_color))(length(magnitude_ids) + 1)[-1]
+	return(
+		ggplot(plot_df, aes(x=base_bin, y=fraction, fill=magnitude_bin)) +
+		geom_col(position=position_dodge(width=.8), width=.72, color="#111827", linewidth=.2) +
+		geom_errorbar(aes(ymin=ci_lower, ymax=ci_upper), position=position_dodge(width=.8), width=.18, linewidth=.35, color="#111827") +
+		scale_fill_manual(values=magnitude_colors, name="Borzoi magnitude bin") +
+		scale_y_continuous(labels=number_format(accuracy=.01)) +
+		xlab(base_xlab) +
+		ylab("Fraction of\nvariant-gene pairs") +
+		figure_theme() +
+		theme(
+			legend.position="right",
+			legend.title=element_text(face="bold"),
+			axis.text.x=element_text(angle=35, hjust=1, vjust=1),
+			plot.margin=margin(8, 14, 8, 8)
+		)
+	)
+}
+
+
+per_tissue_sldmc_magnitude_results <- function(sldmc_results_output_dir, tissue_info_df, annotation_version="default", magnitude_annotation_name="borzoi_magnitude_bins") {
 	# Build a long data frame with one row per (tissue, borzoi magnitude bin), holding both the
 	# correlation and the calibration slope (with bootstrap SEs) from that tissue's per-tissue
 	# S-LDMC bootstrap_stats file (sldmc_results_<tissue>_<sample>_<version>_bootstrap_stats.txt).
+	# magnitude_annotation_name selects which binning to pull (e.g. borzoi_finer_magnitude_bins).
 	results_df = data.frame()
 	for (row_iter in seq_len(nrow(tissue_info_df))) {
 		target_tissue = tissue_info_df$GTEx_tissue[row_iter]
@@ -159,9 +290,9 @@ per_tissue_sldmc_magnitude_results <- function(sldmc_results_output_dir, tissue_
 			next
 		}
 		tissue_df = read.table(stats_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
-		magnitude_df = tissue_df[tissue_df$annotation_name == "borzoi_magnitude_bins", ]
+		magnitude_df = tissue_df[tissue_df$annotation_name == magnitude_annotation_name, ]
 		if (nrow(magnitude_df) == 0) {
-			print(paste("WARNING: no borzoi_magnitude_bins rows in", stats_file))
+			print(paste("WARNING: no", magnitude_annotation_name, "rows in", stats_file))
 			next
 		}
 
@@ -185,20 +316,26 @@ per_tissue_sldmc_magnitude_results <- function(sldmc_results_output_dir, tissue_
 }
 
 
-make_per_tissue_magnitude_dot_plot <- function(df, value_col, ylab, point_color) {
+make_per_tissue_magnitude_dot_plot <- function(df, value_col, ylab, point_color, bin_labels=NULL) {
 	# Jittered dot plot of a per-tissue S-LDMC estimate (correlation, calibration_slope, ...) across
 	# the borzoi magnitude bins (one dot per tissue per bin). Expects the long df from
-	# per_tissue_sldmc_magnitude_results.
+	# per_tissue_sldmc_magnitude_results. bin_labels optionally supplies x-axis labels (in bin order);
+	# when NULL the default 5-bin labels are used if they match the number of bins.
 	plot_df = df
 	plot_df$value = plot_df[[value_col]]
 	bin_ids = suppressWarnings(as.numeric(sub(".*magnitude_bin([0-9]+)$", "\\1", plot_df$category_name)))
 	ordered_bins = unique(plot_df$category_name[order(bin_ids)])
 	plot_df$category_name = factor(plot_df$category_name, levels=ordered_bins)
-	magnitude_bin_labels = c("<0.001", "0.001-0.01", "0.01-0.075", "0.075-0.2", ">=0.2")
-	if (nlevels(plot_df$category_name) == length(magnitude_bin_labels)) {
-		bin_labels = magnitude_bin_labels
-	} else {
-		bin_labels = paste0("bin", seq_len(nlevels(plot_df$category_name)))
+	if (is.null(bin_labels)) {
+		magnitude_bin_labels = c("<0.001", "0.001-0.01", "0.01-0.075", "0.075-0.2", ">=0.2")
+		if (nlevels(plot_df$category_name) == length(magnitude_bin_labels)) {
+			bin_labels = magnitude_bin_labels
+		} else {
+			bin_labels = paste0("bin", seq_len(nlevels(plot_df$category_name)))
+		}
+	}
+	if (length(bin_labels) != nlevels(plot_df$category_name)) {
+		stop(paste("bin_labels has", length(bin_labels), "labels but data has", nlevels(plot_df$category_name), "magnitude bins"))
 	}
 	return(
 		ggplot(plot_df, aes(x=category_name, y=value)) +
@@ -217,7 +354,7 @@ make_per_tissue_magnitude_dot_plot <- function(df, value_col, ylab, point_color)
 }
 
 
-make_five_tissue_magnitude_bar_plot <- function(df, value_col, se_col, ylab, tissue_colors, y_limits=NULL, y_accuracy=.01, reference_line=NULL, truncation_note=NULL) {
+make_five_tissue_magnitude_bar_plot <- function(df, value_col, se_col, ylab, tissue_colors, y_limits=NULL, y_accuracy=.01, reference_line=NULL, truncation_note=NULL, bin_labels=NULL) {
 	# Grouped bar plot: x-axis is the borzoi magnitude bin, and within each magnitude bin one dodged
 	# bar per selected tissue (colored by tissue, with 95% Gaussian CI error bars). Expects the long df
 	# from per_tissue_sldmc_magnitude_results and a named vector mapping target_tissue -> bar color;
@@ -225,6 +362,8 @@ make_five_tissue_magnitude_bar_plot <- function(df, value_col, se_col, ylab, tis
 	# y_limits zooms the y-axis without dropping data (error bars running past it are drawn to the panel
 	# edge), y_accuracy sets the tick label precision, reference_line adds a dotted horizontal reference
 	# (e.g. 1 = perfect calibration), and truncation_note labels the panel when y_limits clips a CI.
+	# bin_labels optionally supplies x-axis labels (in bin order); when NULL the default 5-bin labels
+	# are used if they match the number of bins.
 	plot_df = df[df$target_tissue %in% names(tissue_colors), ]
 	missing_tissues = setdiff(names(tissue_colors), unique(plot_df$target_tissue))
 	if (length(missing_tissues) > 0) {
@@ -239,11 +378,16 @@ make_five_tissue_magnitude_bar_plot <- function(df, value_col, se_col, ylab, tis
 	bin_ids = suppressWarnings(as.numeric(sub(".*magnitude_bin([0-9]+)$", "\\1", plot_df$category_name)))
 	ordered_bins = unique(plot_df$category_name[order(bin_ids)])
 	plot_df$category_name = factor(plot_df$category_name, levels=ordered_bins)
-	magnitude_bin_labels = c("<0.001", "0.001-0.01", "0.01-0.075", "0.075-0.2", ">=0.2")
-	if (nlevels(plot_df$category_name) == length(magnitude_bin_labels)) {
-		bin_labels = magnitude_bin_labels
-	} else {
-		bin_labels = paste0("bin", seq_len(nlevels(plot_df$category_name)))
+	if (is.null(bin_labels)) {
+		magnitude_bin_labels = c("<0.001", "0.001-0.01", "0.01-0.075", "0.075-0.2", ">=0.2")
+		if (nlevels(plot_df$category_name) == length(magnitude_bin_labels)) {
+			bin_labels = magnitude_bin_labels
+		} else {
+			bin_labels = paste0("bin", seq_len(nlevels(plot_df$category_name)))
+		}
+	}
+	if (length(bin_labels) != nlevels(plot_df$category_name)) {
+		stop(paste("bin_labels has", length(bin_labels), "labels but data has", nlevels(plot_df$category_name), "magnitude bins"))
 	}
 
 	tissue_levels = names(tissue_colors)[names(tissue_colors) %in% plot_df$target_tissue]
@@ -291,23 +435,26 @@ make_five_tissue_magnitude_bar_plot <- function(df, value_col, se_col, ylab, tis
 }
 
 
-make_stacked_shared_x_plot <- function(top_plot, bottom_plot, panel_labels, shared_legend=TRUE, horizontal_x_labels=TRUE) {
+make_stacked_shared_x_plot <- function(top_plot, bottom_plot, panel_labels, shared_legend=TRUE, horizontal_x_labels=TRUE, per_panel_legends=FALSE) {
 	# Stack two plots that share the same x-axis into one figure: the top panel drops its (duplicated)
 	# x-axis title, tick labels and ticks, so the axis is drawn once under the bottom panel.
 	# shared_legend replaces the two per-panel legends with a single legend along the bottom (set FALSE
 	# for plots that have no legend), and horizontal_x_labels un-angles the bottom panel's tick labels
 	# (set FALSE when the labels are too long to fit horizontally).
+	# per_panel_legends instead keeps each panel's own legend where its theme puts it (for panels whose
+	# legends differ, e.g. distinct color ramps, where one shared legend can't represent both); it
+	# overrides shared_legend.
 	# The panel letters are ggplot tags rather than plot_grid labels so that they survive the gtable
 	# stacking below.
 	panel_tag_theme = theme(plot.tag=element_text(face="bold", size=14, hjust=0, vjust=1), plot.tag.position=c(0, 1))
-	top_panel = top_plot + labs(tag=panel_labels[1]) + panel_tag_theme + theme(
-		legend.position="none",
+	legend_theme = if (per_panel_legends) theme() else theme(legend.position="none")
+	top_panel = top_plot + labs(tag=panel_labels[1]) + panel_tag_theme + legend_theme + theme(
 		axis.title.x=element_blank(),
 		axis.text.x=element_blank(),
 		axis.ticks.x=element_blank(),
 		plot.margin=margin(6, 8, 2, 8)
 	)
-	bottom_panel = bottom_plot + labs(tag=panel_labels[2]) + panel_tag_theme + theme(legend.position="none", plot.margin=margin(2, 8, 4, 8))
+	bottom_panel = bottom_plot + labs(tag=panel_labels[2]) + panel_tag_theme + legend_theme + theme(plot.margin=margin(2, 8, 4, 8))
 	if (horizontal_x_labels) {
 		bottom_panel = bottom_panel + theme(axis.text.x=element_text(angle=0, hjust=.5, vjust=1))
 	}
@@ -321,7 +468,7 @@ make_stacked_shared_x_plot <- function(top_plot, bottom_plot, panel_labels, shar
 	top_grob$widths = shared_widths
 	bottom_grob$widths = shared_widths
 	stacked_panels = ggdraw(rbind(top_grob, bottom_grob, size="first"))
-	if (shared_legend == FALSE) {
+	if (per_panel_legends || shared_legend == FALSE) {
 		return(stacked_panels)
 	}
 	legend_source_plot = bottom_plot +
@@ -359,7 +506,8 @@ save_source_forest_plot <- function(diff_df, anno_to_source, target_source, excl
 		return(invisible(NULL))
 	}
 	forest_plot = make_sldsc_annotation_forest_plot(subset_df, excluded_annotation_regex, present_category)
-	ggsave(output_file, forest_plot, width=7.6, height=max(4, 0.22*n_annotations + 1.4))
+	# Annotations run along the x-axis (metric panels stacked), so the width grows with their count
+	ggsave(output_file, forest_plot, width=max(7.6, 0.22*n_annotations + 1.4), height=6.0)
 	print(output_file)
 }
 
@@ -401,21 +549,22 @@ make_sldsc_annotation_forest_plot <- function(diff_df, excluded_annotation_regex
 	)
 
 	return(
-		ggplot(present_df, aes(x=difference, y=annotation_name, color=significant)) +
-		geom_vline(xintercept=0, linewidth=.4, color="#6B7280", linetype="dashed") +
-		geom_errorbarh(aes(xmin=ci_lower, xmax=ci_upper), height=0, linewidth=.45) +
+		ggplot(present_df, aes(x=annotation_name, y=difference, color=significant)) +
+		geom_hline(yintercept=0, linewidth=.4, color="#6B7280", linetype="dashed") +
+		geom_errorbar(aes(ymin=ci_lower, ymax=ci_upper), width=0, linewidth=.45) +
 		geom_point(size=1.7) +
-		facet_wrap(~metric, scales="free_x") +
+		# Panels are stacked so the annotation labels are drawn once, full-width, under the bottom panel
+		facet_wrap(~metric, ncol=1, scales="free_y") +
 		scale_color_manual(values=c("FALSE"="#9CA3AF", "TRUE"="#3F88C5"), labels=c("FALSE"="n.s.", "TRUE"="FDR<0.05"), name=NULL) +
-		scale_x_continuous(labels=number_format(accuracy=.01)) +
-		scale_y_discrete(labels=function(annotation_names) gsub("_", " ", gsub("borzoi_magnitude_stratifiedX", "", annotation_names))) +
-		xlab("Difference from intercept") +
-		ylab(NULL) +
+		scale_y_continuous(labels=number_format(accuracy=.01)) +
+		scale_x_discrete(labels=function(annotation_names) gsub("_", " ", gsub("borzoi_magnitude_stratifiedX", "", annotation_names))) +
+		ylab("Difference from intercept") +
+		xlab(NULL) +
 		figure_theme() +
 		theme(
 			legend.position="top",
-			axis.text.y=element_text(size=7),
-			panel.grid.major.y=element_line(color="#E5E7EB", linewidth=.3),
+			axis.text.x=element_text(angle=45, hjust=1, vjust=1, size=7),
+			panel.grid.major.x=element_line(color="#E5E7EB", linewidth=.3),
 			strip.background=element_blank(),
 			strip.text=element_text(face="bold", size=10),
 			plot.margin=margin(8, 14, 8, 8)
@@ -586,6 +735,8 @@ tissue_names_file = args[3]
 visualization_dir = args[4]
 annotation_name_file = args[5]
 simulation_oracle_results_dir = args[6]
+# Directory holding the per-tissue borzoi annotation files (source of the category-counts files)
+borzoi_annotation_dir = args[7]
 
 
 ######################
@@ -600,18 +751,18 @@ sim_calibration_oracle_df = load_in_oracle_result(simulation_oracle_results_dir,
 
 # Correlation: estimates from each method against the true simulated correlation
 simulation_correlation_plot = make_simulation_estimate_bar_plot(simulation_correlation_summary_df, sim_corr_oracle_df, "Correlation of causal\nand predicted eQTL effects", "#3F88C5")
-simulation_correlation_output_file = paste0(visualization_dir, "simulation_correlation_estimates.pdf")
-ggsave(simulation_correlation_output_file, simulation_correlation_plot, width=7.2, height=3.6)
+#simulation_correlation_output_file = paste0(visualization_dir, "simulation_correlation_estimates.pdf")
+#ggsave(simulation_correlation_output_file, simulation_correlation_plot, width=7.2, height=3.6)
 
 # Calibration: estimates from each method against the true simulated regression slope
 simulation_calibration_plot = make_simulation_estimate_bar_plot(simulation_calibration_summary_df, sim_calibration_oracle_df, "Calibration of causal\non predicted eQTL effects", "#B85C38", y_accuracy=.1)
-simulation_calibration_output_file = paste0(visualization_dir, "simulation_calibration_estimates.pdf")
-ggsave(simulation_calibration_output_file, simulation_calibration_plot, width=7.2, height=3.6)
+#simulation_calibration_output_file = paste0(visualization_dir, "simulation_calibration_estimates.pdf")
+#ggsave(simulation_calibration_output_file, simulation_calibration_plot, width=7.2, height=3.6)
 
 # Joint version
 joint_simulation <- plot_grid(simulation_calibration_plot, simulation_correlation_plot, ncol=2, labels=c("a", "b"))
-simulation_output_file = paste0(visualization_dir, "simulation_joint_stimates.pdf")
-ggsave(simulation_output_file, joint_simulation, width=7.2, height=2.5)
+#simulation_output_file = paste0(visualization_dir, "simulation_joint_stimates.pdf")
+#ggsave(simulation_output_file, joint_simulation, width=7.2, height=2.5)
 
 
 ######################
@@ -642,12 +793,29 @@ sldmc_magnitude_stratified_df = read.table(paste0(sldmc_results_output_dir, "sld
 # Borzoi magnitude bin correlation and calibration plots showing distribution of per-tissue estimates
 #######################
 per_tissue_magnitude_correlation_plot = make_per_tissue_magnitude_dot_plot(per_tissue_sldmc_default_magnitude_df, "correlation", "S-LDMC\nCorrelation", "#3F88C5")
-per_tissue_magnitude_correlation_output_file = paste0(visualization_dir, "sldmc_per_tissue_magnitude_correlation.pdf")
-ggsave(per_tissue_magnitude_correlation_output_file, per_tissue_magnitude_correlation_plot, width=7.2, height=3.3)
-
 per_tissue_magnitude_calibration_plot = make_per_tissue_magnitude_dot_plot(per_tissue_sldmc_default_magnitude_df, "calibration_slope", "S-LDMC\nCalibration coefficient", "#B85C38")
-per_tissue_magnitude_calibration_output_file = paste0(visualization_dir, "sldmc_per_tissue_magnitude_calibration.pdf")
-ggsave(per_tissue_magnitude_calibration_output_file, per_tissue_magnitude_calibration_plot, width=7.2, height=3.3)
+
+# Make joint plot
+per_tissue_joint_plot <- plot_grid(per_tissue_magnitude_calibration_plot, per_tissue_magnitude_correlation_plot, ncol=1, labels=c("a", "b"))
+per_tissue_joint_plot_output_file = paste0(visualization_dir, "sldmc_per_tissue_magnitude_joint_calibration_correlation.pdf")
+ggsave(per_tissue_joint_plot_output_file, per_tissue_joint_plot, width=7.2, height=5.0)
+
+
+########################
+# Same per-tissue correlation and calibration dot plots, but using the finer-grained
+# borzoi_finer_magnitude_bins annotation (9 bins; edges in annotate_variant_gene_pairs.py)
+#######################
+per_tissue_finer_magnitude_bin_labels = c("<0.001", "0.001-0.005", "0.005-0.01", "0.01-0.025", "0.025-0.05", "0.05-0.1", "0.1-0.2", "0.2-0.4", ">=0.4")
+per_tissue_sldmc_finer_magnitude_df = per_tissue_sldmc_magnitude_results(sldmc_results_output_dir, tissue_info_df, magnitude_annotation_name="borzoi_finer_magnitude_bins")
+
+per_tissue_finer_magnitude_correlation_plot = make_per_tissue_magnitude_dot_plot(per_tissue_sldmc_finer_magnitude_df, "correlation", "S-LDMC\nCorrelation", "#3F88C5", bin_labels=per_tissue_finer_magnitude_bin_labels)
+per_tissue_finer_magnitude_calibration_plot = make_per_tissue_magnitude_dot_plot(per_tissue_sldmc_finer_magnitude_df, "calibration_slope", "S-LDMC\nCalibration coefficient", "#B85C38", bin_labels=per_tissue_finer_magnitude_bin_labels)
+
+# Make joint plot
+per_tissue_finer_joint_plot <- plot_grid(per_tissue_finer_magnitude_calibration_plot, per_tissue_finer_magnitude_correlation_plot, ncol=1, labels=c("a", "b"))
+per_tissue_finer_joint_plot_output_file = paste0(visualization_dir, "sldmc_per_tissue_finer_magnitude_joint_calibration_correlation.pdf")
+ggsave(per_tissue_finer_joint_plot_output_file, per_tissue_finer_joint_plot, width=7.2, height=5.0)
+
 
 
 ########################
@@ -668,19 +836,175 @@ five_tissue_colors = c(
 )
 
 five_tissue_magnitude_correlation_plot = make_five_tissue_magnitude_bar_plot(per_tissue_sldmc_default_magnitude_df, "correlation", "correlation_se", "S-LDMC\nCorrelation", five_tissue_colors, y_accuracy=.1)
-five_tissue_magnitude_correlation_output_file = paste0(visualization_dir, "sldmc_five_tissue_magnitude_correlation.pdf")
-ggsave(five_tissue_magnitude_correlation_output_file, five_tissue_magnitude_correlation_plot, width=8.5, height=3.6)
 
 # The lowest magnitude bin's calibration estimates are very noisy, so the y-axis is zoomed to the range
 # the other bins occupy (a dotted line marks 1 = perfect calibration) and the clipped CI is noted.
 five_tissue_calibration_y_limits = c(-1.2, 1.5)
 five_tissue_magnitude_calibration_plot = make_five_tissue_magnitude_bar_plot(per_tissue_sldmc_default_magnitude_df, "calibration_slope", "calibration_slope_se", "S-LDMC\nCalibration coefficient", five_tissue_colors, y_limits=five_tissue_calibration_y_limits, y_accuracy=.5, reference_line=1, truncation_note="CIs in the lowest bin extend beyond the axis")
-five_tissue_magnitude_calibration_output_file = paste0(visualization_dir, "sldmc_five_tissue_magnitude_calibration.pdf")
-ggsave(five_tissue_magnitude_calibration_output_file, five_tissue_magnitude_calibration_plot, width=8.5, height=3.6)
 
 # Make joint calibration + correlation plot for the five tissues (shared x-axis and shared legend)
-joint_five_tissue_magnitude_plot = make_stacked_shared_x_plot(five_tissue_magnitude_calibration_plot, five_tissue_magnitude_correlation_plot, c("c", "d"))
+joint_five_tissue_magnitude_plot = make_stacked_shared_x_plot(five_tissue_magnitude_calibration_plot, five_tissue_magnitude_correlation_plot, c("a", "b"))
 ggsave(paste0(visualization_dir, "sldmc_five_tissue_magnitude_correlation_calibration.pdf"), joint_five_tissue_magnitude_plot, width=7.2, height=4.6)
+
+
+########################
+# Same five-tissue correlation and calibration bar plots, but using the finer-grained
+# borzoi_finer_magnitude_bins annotation (9 bins; edges in annotate_variant_gene_pairs.py)
+#######################
+five_tissue_finer_magnitude_correlation_plot = make_five_tissue_magnitude_bar_plot(per_tissue_sldmc_finer_magnitude_df, "correlation", "correlation_se", "S-LDMC\nCorrelation", five_tissue_colors, y_accuracy=.1, bin_labels=per_tissue_finer_magnitude_bin_labels)
+
+# As in the coarse-bin version, the lowest magnitude bins' calibration estimates are very noisy, so
+# the y-axis is zoomed to the range the other bins occupy (dotted line marks 1 = perfect calibration)
+# and the clipped CIs are noted.
+five_tissue_finer_magnitude_calibration_plot = make_five_tissue_magnitude_bar_plot(per_tissue_sldmc_finer_magnitude_df, "calibration_slope", "calibration_slope_se", "S-LDMC\nCalibration coefficient", five_tissue_colors, y_limits=five_tissue_calibration_y_limits, y_accuracy=.5, reference_line=1, truncation_note="CIs in the lowest bins extend beyond the axis", bin_labels=per_tissue_finer_magnitude_bin_labels)
+
+# Make joint calibration + correlation plot for the five tissues (shared x-axis and shared legend).
+# The nine finer bin labels overlap when drawn horizontally, so keep them angled.
+joint_five_tissue_finer_magnitude_plot = make_stacked_shared_x_plot(five_tissue_finer_magnitude_calibration_plot, five_tissue_finer_magnitude_correlation_plot, c("a", "b"), horizontal_x_labels=FALSE)
+ggsave(paste0(visualization_dir, "sldmc_five_tissue_finer_magnitude_correlation_calibration.pdf"), joint_five_tissue_finer_magnitude_plot, width=7.2, height=4.6)
+
+
+########################
+# Borzoi magnitude bin correlation and calibration plots
+########################
+magnitude_correlation_plot = make_sldmc_magnitude_bar_plot(sldmc_default_df, "correlation", "S-LDMC\nCorrelation", NULL, "#3F88C5")
+
+magnitude_calibration_plot = make_sldmc_magnitude_bar_plot(sldmc_default_df, "calibration_slope", "S-LDMC\nCalibration coefficient", NULL, "#B85C38")
+
+# joint calibration + correlation plot for the borzoi magnitude bins
+joint_magnitude_plot = plot_grid(magnitude_calibration_plot, magnitude_correlation_plot, nrow=2, labels=c("a", "b"))
+ggsave(paste0(visualization_dir, "sldmc_borzoi_magnitude_joint.pdf"), joint_magnitude_plot, width=7.2, height=4.5)
+
+
+########################
+# Finer-grained Borzoi magnitude bin correlation and calibration plots
+########################
+# Bin edges of the 'borzoi_finer_magnitude_bins' annotation (annotate_variant_gene_pairs.py):
+# 0, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4, Inf
+finer_magnitude_bin_labels = c("<0.001", "0.001-0.005", "0.005-0.01", "0.01-0.025", "0.025-0.05", "0.05-0.1", "0.1-0.2", "0.2-0.4", ">=0.4")
+
+finer_magnitude_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_finer_magnitude_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Borzoi magnitude bin", "#3F88C5", finer_magnitude_bin_labels, y_accuracy=.1)
+
+finer_magnitude_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_finer_magnitude_bins", "calibration_slope", "S-LDMC\nCalibration", NULL, "Borzoi magnitude bin", "#B85C38", finer_magnitude_bin_labels, y_accuracy=.5)
+
+# Joint calibration + correlation plot for the finer magnitude bins (x-axis drawn once, under the
+# bottom panel; the bin labels stay angled because they are too long to fit horizontally)
+joint_finer_magnitude_plot = make_stacked_shared_x_plot(finer_magnitude_calibration_plot, finer_magnitude_correlation_plot, c("c", "d"), shared_legend=FALSE, horizontal_x_labels=FALSE)
+
+
+
+########################
+# Allele frequency bin correlation and calibration plots
+########################
+af_bin_labels = c("<0.05", "0.05-0.1", "0.1-0.2", "0.2-0.3", ">=0.3")
+
+af_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "af_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Minor allele frequency bin", "#3F88C5", af_bin_labels)
+af_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "af_bins", "calibration_slope", "S-LDMC\nCalibration coefficient", NULL, "Minor allele frequency bin", "#B85C38", af_bin_labels)
+
+# Joint calibration + correlation plot for the allele frequency bins (x-axis drawn once, under the
+# bottom panel; the bin labels stay angled because they are too long to fit horizontally)
+joint_af_plot = make_stacked_shared_x_plot(af_calibration_plot, af_correlation_plot, c("a", "b"), shared_legend=FALSE, horizontal_x_labels=FALSE)
+joint_af_output_file = paste0(visualization_dir, "sldmc_af_joint.pdf")
+ggsave(joint_af_output_file, joint_af_plot, width=7.2, height=4.5)
+
+########################
+# Distance to TSS bin correlation and calibration plots
+########################
+dist_to_tss_bin_labels = c("0-1 kb", "1-5 kb", "5-25 kb", "25-50 kb", "50-100 kb")
+# Correlation
+dist_to_tss_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "dist_to_tss_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Distance to TSS bin", "#3F88C5", dist_to_tss_bin_labels)
+# Calibration
+dist_to_tss_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "dist_to_tss_bins", "calibration_slope", "S-LDMC\nCalibration coefficient", NULL, "Distance to TSS bin", "#B85C38", dist_to_tss_bin_labels)
+# Joint
+joint_dist_to_tss_plot = make_stacked_shared_x_plot(dist_to_tss_calibration_plot, dist_to_tss_correlation_plot, c("a", "b"), shared_legend=FALSE, horizontal_x_labels=FALSE)
+joint_dist_to_tss_output_file = paste0(visualization_dir, "sldmc_dist_to_tss_joint.pdf")
+ggsave(joint_dist_to_tss_output_file, joint_dist_to_tss_plot, width=7.2, height=4.5)
+
+########################
+# Distance to TSS bin correlation and calibration plots, stratified by borzoi magnitude bin (facet rows)
+########################
+# Correlation
+dist_to_tss_stratified_correlation_plot = make_sldmc_magnitude_stratified_bar_plot(sldmc_magnitude_stratified_df, "dist_to_tss_bins", "correlation", "S-LDMC\nCorrelation", "Distance to TSS bin", "#3F88C5", dist_to_tss_bin_labels)
+
+# Calibration
+dist_to_tss_stratified_calibration_plot = make_sldmc_magnitude_stratified_bar_plot(sldmc_magnitude_stratified_df, "dist_to_tss_bins", "calibration_slope", "S-LDMC\nCalibration coefficient", "Distance to TSS bin", "#B85C38", dist_to_tss_bin_labels)
+
+# Joint. The two panels use distinct color ramps for the TSS-distance bins, so each keeps its own
+# right-side legend rather than sharing one.
+joint_dist_to_tss_stratified_plot = make_stacked_shared_x_plot(dist_to_tss_stratified_calibration_plot, dist_to_tss_stratified_correlation_plot, c("a", "b"), horizontal_x_labels=FALSE, per_panel_legends=TRUE)
+joint_dist_to_tss_stratified_output_file = paste0(visualization_dir, "sldmc_dist_to_tss_stratified_joint.pdf")
+ggsave(joint_dist_to_tss_stratified_output_file, joint_dist_to_tss_stratified_plot, width=7.2, height=6.0)
+
+
+
+########################
+# Correlation across distance to TSS bins, colored by borzoi magnitude bin (transposed view of the
+# stratified plot above: same data, axes swapped)
+########################
+dist_to_tss_by_magnitude_correlation_plot = make_sldmc_base_by_magnitude_bar_plot(sldmc_magnitude_stratified_df, "dist_to_tss_bins", "correlation", "S-LDMC\nCorrelation", "Distance to TSS bin", "#3F88C5", dist_to_tss_bin_labels)
+
+
+########################
+# Fraction of variant-gene pairs in each borzoi magnitude bin, computed separately within each
+# distance to TSS bin (counts summed across all tissues' annotation category-counts files)
+########################
+dist_to_tss_magnitude_counts_df = load_dist_to_tss_by_magnitude_bin_counts(borzoi_annotation_dir, tissue_info_df)
+dist_to_tss_magnitude_fraction_plot = make_magnitude_fraction_by_dist_to_tss_plot(dist_to_tss_magnitude_counts_df, "Distance to TSS bin", "#4F5D75", dist_to_tss_bin_labels)
+
+# Joint output file. The bottom legends put the title above the row of keys: title + five keys in
+# one row is wider than the page and the last key gets clipped.
+bottom_legend_layers = list(
+	theme(legend.position="top", legend.margin=margin(0, 0, 0, 0)),
+	guides(fill=guide_legend(title.position="top", title.hjust=.5, nrow=1))
+)
+joint_dist_to_tss_magnitude_strat_plot <- plot_grid(dist_to_tss_correlation_plot, NULL, dist_to_tss_magnitude_fraction_plot + bottom_legend_layers, NULL, dist_to_tss_by_magnitude_correlation_plot + bottom_legend_layers, ncol=1, labels=c("a","", "b", "", "c"), rel_heights=c(.9, .05, 1.2,.05, 1.2))
+joint_dist_to_tss_magnitude_strat_output_file = paste0(visualization_dir, "sldmc_dist_to_tss_magnitude_stratified_joint.pdf")
+ggsave(joint_dist_to_tss_magnitude_strat_output_file, joint_dist_to_tss_magnitude_strat_plot, width=7.2, height=7.2)
+
+########################
+# Borzoi effect size bin correlation and calibration plots
+########################
+effect_size_bin_labels = c("< -0.2", "-0.2 to -0.075", "-0.075 to -0.01", "-0.01 to -0.001", "-0.001 to 0", "0 to 0.001", "0.001 to 0.01", "0.01 to 0.075", "0.075 to 0.2", ">= 0.2")
+
+effect_size_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_effect_size_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Borzoi effect size bin", "#3F88C5", effect_size_bin_labels, y_accuracy=.1)
+effect_size_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_effect_size_bins", "calibration_slope", "S-LDMC\nCalibration", NULL, "Borzoi effect size bin", "#B85C38", effect_size_bin_labels, y_accuracy=.5)
+
+
+
+# Joint calibration + correlation plot for the borzoi effect size bins (x-axis drawn once, under the
+# bottom panel; the bin labels stay angled because they are too long to fit horizontally)
+joint_effect_size_plot = make_stacked_shared_x_plot(effect_size_calibration_plot, effect_size_correlation_plot, c("a", "b"), shared_legend=FALSE, horizontal_x_labels=FALSE)
+joint_effect_size_output_file = paste0(visualization_dir, "sldmc_borzoi_effect_size_joint.pdf")
+ggsave(joint_effect_size_output_file, joint_effect_size_plot, width=7.2, height=4.4)
+
+
+
+########################
+# Borzoi finer effect size bin correlation and calibration plots
+########################
+# Bin edges of the 'borzoi_finer_effect_size_bins' annotation (annotate_variant_gene_pairs.py):
+# -Inf, -0.4, -0.2, -0.1, -0.05, -0.025, -0.01, -0.005, -0.001, 0, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4, Inf
+finer_effect_size_bin_labels = c("< -0.4", "-0.4 to -0.2", "-0.2 to -0.1", "-0.1 to -0.05", "-0.05 to -0.025", "-0.025 to -0.01", "-0.01 to -0.005", "-0.005 to -0.001", "-0.001 to 0", "0 to 0.001", "0.001 to 0.005", "0.005 to 0.01", "0.01 to 0.025", "0.025 to 0.05", "0.05 to 0.1", "0.1 to 0.2", "0.2 to 0.4", ">= 0.4")
+
+# 18 bins of long labels do not fit in the 7.2in width the coarser plots use, so these are drawn wider
+finer_effect_size_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_finer_effect_size_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Borzoi effect size bin", "#3F88C5", finer_effect_size_bin_labels, y_accuracy=.1)
+
+finer_effect_size_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_finer_effect_size_bins", "calibration_slope", "S-LDMC\nCalibration coefficient", NULL, "Borzoi effect size bin", "#B85C38", finer_effect_size_bin_labels, y_accuracy=.5)
+
+# Joint calibration + correlation plot for the finer borzoi effect size bins (x-axis drawn once, under
+# the bottom panel; the bin labels stay angled because they are too long to fit horizontally)
+joint_finer_effect_size_plot = make_stacked_shared_x_plot(finer_effect_size_calibration_plot, finer_effect_size_correlation_plot, c("a", "b"), shared_legend=FALSE, horizontal_x_labels=FALSE)
+joint_finer_effect_size_output_file = paste0(visualization_dir, "sldmc_borzoi_finer_effect_size_joint.pdf")
+ggsave(joint_finer_effect_size_output_file, joint_finer_effect_size_plot, width=10.5, height=5.0)
+
+
+
+######################
+# Main figure2
+#######################
+figure2 <- plot_grid(joint_simulation,NULL, joint_finer_magnitude_plot, nrow=3, rel_heights=c(1,.1,1.5))
+figure2_output_file = paste0(visualization_dir, "figure2.pdf")
+ggsave(figure2_output_file, figure2, width=7.2, height=5.5)
 
 
 ########################
@@ -693,7 +1017,7 @@ excluded_gene_set_annotation_regex = "^MohammadiVg|^FinucaneSEG"
 save_source_forest_plot(sldmc_default_diff_df, anno_to_source, "sldsc", excluded_sldsc_annotation_regex, "present", paste0(visualization_dir, "sldmc_sldsc_annotation_forest.pdf"))
 save_source_forest_plot(sldmc_default_diff_df, anno_to_source, "gene_set", excluded_gene_set_annotation_regex, "present", paste0(visualization_dir, "sldmc_gene_set_annotation_forest.pdf"))
 
-
+if (FALSE) {
 ########################
 # Annotation forest plots conditional on borzoi magnitude bin (stratified data): separate plots per source
 ########################
@@ -705,142 +1029,4 @@ for (magnitude_bin_index in 0:4) {
 	save_source_forest_plot(sldmc_magnitude_stratified_diff_df, anno_to_source, "sldsc", excluded_sldsc_annotation_regex, stratified_present_category, paste0(visualization_dir, "sldmc_sldsc_annotation_forest_magnitude_bin", magnitude_bin_index, ".pdf"))
 	save_source_forest_plot(sldmc_magnitude_stratified_diff_df, anno_to_source, "gene_set", excluded_gene_set_annotation_regex, stratified_present_category, paste0(visualization_dir, "sldmc_gene_set_annotation_forest_magnitude_bin", magnitude_bin_index, ".pdf"))
 }
-
-
-########################
-# Borzoi magnitude bin correlation and calibration plots
-########################
-magnitude_correlation_plot = make_sldmc_magnitude_bar_plot(sldmc_default_df, "correlation", "S-LDMC\nCorrelation", NULL, "#3F88C5")
-magnitude_correlation_output_file = paste0(visualization_dir, "sldmc_borzoi_magnitude_correlation.pdf")
-ggsave(magnitude_correlation_output_file, magnitude_correlation_plot, width=7.2, height=3.3)
-
-magnitude_calibration_plot = make_sldmc_magnitude_bar_plot(sldmc_default_df, "calibration_slope", "S-LDMC\nCalibration coefficient", NULL, "#B85C38")
-magnitude_calibration_output_file = paste0(visualization_dir, "sldmc_borzoi_magnitude_calibration.pdf")
-ggsave(magnitude_calibration_output_file, magnitude_calibration_plot, width=7.2, height=3.3)
-
-# joint calibration + correlation plot for the borzoi magnitude bins
-joint_magnitude_plot = plot_grid(magnitude_calibration_plot, magnitude_correlation_plot, nrow=1, labels=c("c", "d"))
-ggsave(paste0(visualization_dir, "sldmc_borzoi_magnitude_joint.pdf"), joint_magnitude_plot, width=7.2, height=3.3)
-
-
-########################
-# Finer-grained Borzoi magnitude bin correlation and calibration plots
-########################
-# Bin edges of the 'borzoi_finer_magnitude_bins' annotation (annotate_variant_gene_pairs.py):
-# 0, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4, Inf
-finer_magnitude_bin_labels = c("<0.001", "0.001-0.005", "0.005-0.01", "0.01-0.025", "0.025-0.05", "0.05-0.1", "0.1-0.2", "0.2-0.4", ">=0.4")
-
-finer_magnitude_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_finer_magnitude_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Borzoi magnitude bin", "#3F88C5", finer_magnitude_bin_labels, y_accuracy=.1)
-finer_magnitude_correlation_output_file = paste0(visualization_dir, "sldmc_borzoi_finer_magnitude_correlation.pdf")
-ggsave(finer_magnitude_correlation_output_file, finer_magnitude_correlation_plot, width=7.2, height=3.3)
-
-finer_magnitude_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_finer_magnitude_bins", "calibration_slope", "S-LDMC\nCalibration", NULL, "Borzoi magnitude bin", "#B85C38", finer_magnitude_bin_labels, y_accuracy=.5)
-finer_magnitude_calibration_output_file = paste0(visualization_dir, "sldmc_borzoi_finer_magnitude_calibration.pdf")
-ggsave(finer_magnitude_calibration_output_file, finer_magnitude_calibration_plot, width=7.2, height=3.3)
-
-# Joint calibration + correlation plot for the finer magnitude bins (x-axis drawn once, under the
-# bottom panel; the bin labels stay angled because they are too long to fit horizontally)
-joint_finer_magnitude_plot = make_stacked_shared_x_plot(finer_magnitude_calibration_plot, finer_magnitude_correlation_plot, c("c", "d"), shared_legend=FALSE, horizontal_x_labels=FALSE)
-joint_finer_magnitude_output_file = paste0(visualization_dir, "sldmc_borzoi_finer_magnitude_joint.pdf")
-ggsave(joint_finer_magnitude_output_file, joint_finer_magnitude_plot, width=7.2, height=4.4)
-
-
-
-########################
-# Allele frequency bin correlation and calibration plots
-########################
-af_bin_labels = c("<0.05", "0.05-0.1", "0.1-0.2", "0.2-0.3", ">=0.3")
-
-af_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "af_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Minor allele frequency bin", "#3F88C5", af_bin_labels)
-af_correlation_output_file = paste0(visualization_dir, "sldmc_af_correlation.pdf")
-ggsave(af_correlation_output_file, af_correlation_plot, width=7.2, height=3.3)
-
-af_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "af_bins", "calibration_slope", "S-LDMC\nCalibration coefficient", NULL, "Minor allele frequency bin", "#B85C38", af_bin_labels)
-af_calibration_output_file = paste0(visualization_dir, "sldmc_af_calibration.pdf")
-ggsave(af_calibration_output_file, af_calibration_plot, width=7.2, height=3.3)
-
-
-########################
-# Distance to TSS bin correlation and calibration plots
-########################
-dist_to_tss_bin_labels = c("0-1 kb", "1-5 kb", "5-25 kb", "25-50 kb", "50-100 kb")
-
-dist_to_tss_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "dist_to_tss_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Distance to TSS bin", "#3F88C5", dist_to_tss_bin_labels)
-dist_to_tss_correlation_output_file = paste0(visualization_dir, "sldmc_dist_to_tss_correlation.pdf")
-ggsave(dist_to_tss_correlation_output_file, dist_to_tss_correlation_plot, width=7.2, height=3.3)
-
-dist_to_tss_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "dist_to_tss_bins", "calibration_slope", "S-LDMC\nCalibration coefficient", NULL, "Distance to TSS bin", "#B85C38", dist_to_tss_bin_labels)
-dist_to_tss_calibration_output_file = paste0(visualization_dir, "sldmc_dist_to_tss_calibration.pdf")
-ggsave(dist_to_tss_calibration_output_file, dist_to_tss_calibration_plot, width=7.2, height=3.3)
-
-
-########################
-# Distance to TSS bin correlation and calibration plots, stratified by borzoi magnitude bin (facet rows)
-########################
-dist_to_tss_stratified_correlation_plot = make_sldmc_magnitude_stratified_bar_plot(sldmc_magnitude_stratified_df, "dist_to_tss_bins", "correlation", "S-LDMC\nCorrelation", "Distance to TSS bin", "#3F88C5", dist_to_tss_bin_labels)
-dist_to_tss_stratified_correlation_output_file = paste0(visualization_dir, "sldmc_dist_to_tss_magnitude_stratified_correlation.pdf")
-ggsave(dist_to_tss_stratified_correlation_output_file, dist_to_tss_stratified_correlation_plot, width=8.4, height=3.6)
-
-dist_to_tss_stratified_calibration_plot = make_sldmc_magnitude_stratified_bar_plot(sldmc_magnitude_stratified_df, "dist_to_tss_bins", "calibration_slope", "S-LDMC\nCalibration coefficient", "Distance to TSS bin", "#B85C38", dist_to_tss_bin_labels)
-dist_to_tss_stratified_calibration_output_file = paste0(visualization_dir, "sldmc_dist_to_tss_magnitude_stratified_calibration.pdf")
-ggsave(dist_to_tss_stratified_calibration_output_file, dist_to_tss_stratified_calibration_plot, width=8.4, height=3.6)
-
-
-########################
-# Borzoi effect size bin correlation and calibration plots
-########################
-effect_size_bin_labels = c("< -0.2", "-0.2 to -0.075", "-0.075 to -0.01", "-0.01 to -0.001", "-0.001 to 0", "0 to 0.001", "0.001 to 0.01", "0.01 to 0.075", "0.075 to 0.2", ">= 0.2")
-
-effect_size_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_effect_size_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Borzoi effect size bin", "#3F88C5", effect_size_bin_labels, y_accuracy=.1)
-effect_size_correlation_output_file = paste0(visualization_dir, "sldmc_borzoi_effect_size_correlation.pdf")
-ggsave(effect_size_correlation_output_file, effect_size_correlation_plot, width=7.2, height=3.3)
-
-effect_size_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_effect_size_bins", "calibration_slope", "S-LDMC\nCalibration", NULL, "Borzoi effect size bin", "#B85C38", effect_size_bin_labels, y_accuracy=.5)
-effect_size_calibration_output_file = paste0(visualization_dir, "sldmc_borzoi_effect_size_calibration.pdf")
-ggsave(effect_size_calibration_output_file, effect_size_calibration_plot, width=7.2, height=3.3)
-
-
-# Joint calibration + correlation plot for the borzoi effect size bins (x-axis drawn once, under the
-# bottom panel; the bin labels stay angled because they are too long to fit horizontally)
-joint_effect_size_plot = make_stacked_shared_x_plot(effect_size_calibration_plot, effect_size_correlation_plot, c("c", "d"), shared_legend=FALSE, horizontal_x_labels=FALSE)
-joint_effect_size_output_file = paste0(visualization_dir, "sldmc_borzoi_effect_size_joint.pdf")
-ggsave(joint_effect_size_output_file, joint_effect_size_plot, width=7.2, height=4.4)
-
-
-########################
-# Borzoi finer effect size bin correlation and calibration plots
-########################
-# Bin edges of the 'borzoi_finer_effect_size_bins' annotation (annotate_variant_gene_pairs.py):
-# -Inf, -0.4, -0.2, -0.1, -0.05, -0.025, -0.01, -0.005, -0.001, 0, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4, Inf
-finer_effect_size_bin_labels = c("< -0.4", "-0.4 to -0.2", "-0.2 to -0.1", "-0.1 to -0.05", "-0.05 to -0.025", "-0.025 to -0.01", "-0.01 to -0.005", "-0.005 to -0.001", "-0.001 to 0", "0 to 0.001", "0.001 to 0.005", "0.005 to 0.01", "0.01 to 0.025", "0.025 to 0.05", "0.05 to 0.1", "0.1 to 0.2", "0.2 to 0.4", ">= 0.4")
-
-# 18 bins of long labels do not fit in the 7.2in width the coarser plots use, so these are drawn wider
-finer_effect_size_correlation_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_finer_effect_size_bins", "correlation", "S-LDMC\nCorrelation", NULL, "Borzoi effect size bin", "#3F88C5", finer_effect_size_bin_labels, y_accuracy=.1)
-finer_effect_size_correlation_output_file = paste0(visualization_dir, "sldmc_borzoi_finer_effect_size_correlation.pdf")
-ggsave(finer_effect_size_correlation_output_file, finer_effect_size_correlation_plot, width=10.5, height=3.6)
-
-finer_effect_size_calibration_plot = make_sldmc_bin_bar_plot(sldmc_default_df, "borzoi_finer_effect_size_bins", "calibration_slope", "S-LDMC\nCalibration coefficient", NULL, "Borzoi effect size bin", "#B85C38", finer_effect_size_bin_labels, y_accuracy=.5)
-finer_effect_size_calibration_output_file = paste0(visualization_dir, "sldmc_borzoi_finer_effect_size_calibration.pdf")
-ggsave(finer_effect_size_calibration_output_file, finer_effect_size_calibration_plot, width=10.5, height=3.6)
-
-# Joint calibration + correlation plot for the finer borzoi effect size bins (x-axis drawn once, under
-# the bottom panel; the bin labels stay angled because they are too long to fit horizontally)
-joint_finer_effect_size_plot = make_stacked_shared_x_plot(finer_effect_size_calibration_plot, finer_effect_size_correlation_plot, c("c", "d"), shared_legend=FALSE, horizontal_x_labels=FALSE)
-joint_finer_effect_size_output_file = paste0(visualization_dir, "sldmc_borzoi_finer_effect_size_joint.pdf")
-ggsave(joint_finer_effect_size_output_file, joint_finer_effect_size_plot, width=10.5, height=5.0)
-
-
-
-
-
-######################
-# Main figure2
-#######################
-
-figure2 <- plot_grid(joint_simulation,NULL, joint_effect_size_plot, nrow=3, rel_heights=c(1,.1,1.5))
-figure2_output_file = paste0(visualization_dir, "figure2_v1.pdf")
-ggsave(figure2_output_file, figure2, width=7.2, height=6.0)
-
-figure2 <- plot_grid(joint_simulation,NULL, joint_finer_magnitude_plot, nrow=3, rel_heights=c(1,.1,1.5))
-figure2_output_file = paste0(visualization_dir, "figure2_v2.pdf")
-ggsave(figure2_output_file, figure2, width=7.2, height=6.0)
+}

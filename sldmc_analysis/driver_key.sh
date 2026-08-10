@@ -53,6 +53,7 @@ tissue_permuted_sldmc_results_output_dir=${output_root}"tissue_permuted_sldmc_re
 
 visualize_sldmc_results_dir=${output_root}"visualize_sldmc/"
 
+visualize_tissue_permuted_sldmc_results_dir=${output_root}"visualize_tissue_permuted_sldmc/"
 
 
 
@@ -90,6 +91,7 @@ tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r ori
 	sbatch annotate_variant_gene_pairs.sh $borzoi_effect_file $annotation_name_file $borzoi_annotation_filestem $eqtl_sumstats_file $baselineLD_anno_dir $gene_set_anno_file
 done
 fi
+
 
 
 
@@ -162,10 +164,20 @@ fi
 
 
 
-#################
-# 5.Tissue permuted run of S-LDMC
-#################
 
+#################
+# 7. Visualize results
+#################
+if false; then
+source ~/.bashrc
+conda activate plink_env
+Rscript visualize_sldmc_results.R ${sldmc_results_output_dir} $simulation_results_dir $borzoi_gtex_unique_target_names_file $visualize_sldmc_results_dir $annotation_name_file $simulation_oracle_results_dir $borzoi_output_dir
+fi
+
+
+#################
+# 8.Tissue permuted run of S-LDMC
+#################
 
 # a. Draw the permuted pairing: one row per tissue, holding that tissue plus a randomly drawn partner
 # tissue/sample. Written once and reused, so every downstream permuted run uses the same pairing.
@@ -195,16 +207,11 @@ tail -n +2 "$tissue_permuted_pairs_file" | while IFS=$'\t' read -r target_tissue
 done
 fi
 
-
-
-
-
-
 #################
-# 7. Visualize results
+# 9.Visualize results from the tissue permuted run
 #################
 if false; then
 source ~/.bashrc
 conda activate plink_env
-Rscript visualize_sldmc_results.R ${sldmc_results_output_dir} $simulation_results_dir $borzoi_gtex_unique_target_names_file $visualize_sldmc_results_dir $annotation_name_file $simulation_oracle_results_dir
+Rscript visualize_tissue_permuted_sldmc_results.R ${tissue_permuted_sldmc_results_output_dir} $tissue_permuted_pairs_file $visualize_tissue_permuted_sldmc_results_dir $sldmc_results_output_dir
 fi
