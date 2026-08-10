@@ -93,7 +93,7 @@ for line in f:
 
 	gaussian_error = np.random.normal(loc=0,scale=np.sqrt(.005))
 
-	standardized_borzoi_effect = ((3.0*gaussian_prop_grid[anno_index]*effect_size + (1.0-gaussian_prop_grid[anno_index])*gaussian_error) + constant_small_gaussian_error)/3.0
+	standardized_borzoi_effect = ((gaussian_prop_grid[anno_index]*effect_size + (1.0-gaussian_prop_grid[anno_index])*gaussian_error) + constant_small_gaussian_error)
 
 	t.write(gene_id + '\t' + variant_id + '\t' + chromer + '\t' + snp_pos + '\t' + a0 + '\t' + a1 + '\t' + str(standardized_borzoi_effect) + '\n')
 
