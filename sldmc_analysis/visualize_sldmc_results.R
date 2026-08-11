@@ -506,8 +506,7 @@ save_source_forest_plot <- function(diff_df, anno_to_source, target_source, excl
 		return(invisible(NULL))
 	}
 	forest_plot = make_sldsc_annotation_forest_plot(subset_df, excluded_annotation_regex, present_category)
-	# Annotations run along the x-axis (metric panels stacked), so the width grows with their count
-	ggsave(output_file, forest_plot, width=max(7.6, 0.22*n_annotations + 1.4), height=6.0)
+	ggsave(output_file, forest_plot, width=7.2, height=6.0)
 	print(output_file)
 }
 
@@ -571,6 +570,71 @@ make_sldsc_annotation_forest_plot <- function(diff_df, excluded_annotation_regex
 		)
 	)
 }
+
+make_sldsc_correlation_stratification_forest_plot <- function(default_diff_df, stratified_diff_df, excluded_annotation_regex, magnitude_bin_index, magnitude_bin_label) {
+	# Two-panel forest plot of the S-LDSC (binary) annotations' correlation difference from the
+	# intercept: the top panel is the unstratified estimate (all variant-gene pairs) and the bottom
+	# panel the estimate conditional on being in borzoi magnitude bin <magnitude_bin_index>. The two
+	# panels share the annotation x-axis (ordered by the unstratified difference) so each annotation
+	# can be compared vertically. Points are colored by BH-FDR significance, computed within each panel.
+	default_df = default_diff_df[default_diff_df$category_name == "present" & default_diff_df$output_name == "correlation", ]
+	stratified_present_category = paste0("magnitude_bin", magnitude_bin_index, "Xpresent")
+	stratified_df = stratified_diff_df[stratified_diff_df$category_name == stratified_present_category & stratified_diff_df$output_name == "correlation", ]
+
+	# Magnitude-stratified annotation names carry a prefix; strip it so the two panels share names
+	stratified_df$annotation_name = sub("^borzoi_magnitude_stratifiedX", "", stratified_df$annotation_name)
+
+	unstratified_panel = "All variant-gene pairs"
+	stratified_panel = paste0("Borzoi magnitude bin ", magnitude_bin_label)
+	default_df$panel = unstratified_panel
+	stratified_df$panel = stratified_panel
+	shared_columns = c("annotation_name", "difference", "difference_se", "gaussian_z_score", "panel")
+	present_df = rbind(default_df[, shared_columns], stratified_df[, shared_columns])
+	present_df = present_df[grepl(excluded_annotation_regex, present_df$annotation_name, ignore.case=TRUE) == FALSE, ]
+	if (nrow(present_df) == 0) {
+		stop("No annotation present-cell rows found for the correlation stratification forest plot")
+	}
+
+	# Gaussian CI on the difference, and BH-FDR significance within each panel
+	present_df$ci_lower = present_df$difference - 1.96*present_df$difference_se
+	present_df$ci_upper = present_df$difference + 1.96*present_df$difference_se
+	present_df$pvalue = 2*pnorm(-abs(present_df$gaussian_z_score))
+	present_df$significant = FALSE
+	for (panel_name in unique(present_df$panel)) {
+		panel_rows = present_df$panel == panel_name
+		present_df$significant[panel_rows] = p.adjust(present_df$pvalue[panel_rows], method="BH") < 0.05
+	}
+
+	# Order annotations by the unstratified correlation difference (shared across both panels)
+	unstratified_df = present_df[present_df$panel == unstratified_panel, ]
+	ordered_annotations = unique(c(unstratified_df$annotation_name[order(unstratified_df$difference)], present_df$annotation_name))
+	present_df$annotation_name = factor(present_df$annotation_name, levels=ordered_annotations)
+	present_df$panel = factor(present_df$panel, levels=c(unstratified_panel, stratified_panel))
+
+	return(
+		ggplot(present_df, aes(x=annotation_name, y=difference, color=significant)) +
+		geom_hline(yintercept=0, linewidth=.4, color="#6B7280", linetype="dashed") +
+		geom_errorbar(aes(ymin=ci_lower, ymax=ci_upper), width=0, linewidth=.45) +
+		geom_point(size=1.7) +
+		# Panels are stacked so the annotation labels are drawn once, full-width, under the bottom panel
+		facet_wrap(~panel, ncol=1, scales="free_y") +
+		scale_color_manual(values=c("FALSE"="#9CA3AF", "TRUE"="#3F88C5"), labels=c("FALSE"="n.s.", "TRUE"="FDR<0.05"), name=NULL) +
+		scale_y_continuous(labels=number_format(accuracy=.01)) +
+		scale_x_discrete(labels=function(annotation_names) gsub("_", " ", annotation_names)) +
+		ylab("Correlation difference\nfrom intercept") +
+		xlab(NULL) +
+		figure_theme() +
+		theme(
+			legend.position="top",
+			axis.text.x=element_text(angle=45, hjust=1, vjust=1, size=7),
+			panel.grid.major.x=element_line(color="#E5E7EB", linewidth=.3),
+			strip.background=element_blank(),
+			strip.text=element_text(face="bold", size=10),
+			plot.margin=margin(8, 14, 8, 8)
+		)
+	)
+}
+
 
 load_simulation_summary <- function(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="489", n_anno="6")	{
 	anno_name_arr = c()
@@ -1017,7 +1081,6 @@ excluded_gene_set_annotation_regex = "^MohammadiVg|^FinucaneSEG"
 save_source_forest_plot(sldmc_default_diff_df, anno_to_source, "sldsc", excluded_sldsc_annotation_regex, "present", paste0(visualization_dir, "sldmc_sldsc_annotation_forest.pdf"))
 save_source_forest_plot(sldmc_default_diff_df, anno_to_source, "gene_set", excluded_gene_set_annotation_regex, "present", paste0(visualization_dir, "sldmc_gene_set_annotation_forest.pdf"))
 
-if (FALSE) {
 ########################
 # Annotation forest plots conditional on borzoi magnitude bin (stratified data): separate plots per source
 ########################
@@ -1029,4 +1092,17 @@ for (magnitude_bin_index in 0:4) {
 	save_source_forest_plot(sldmc_magnitude_stratified_diff_df, anno_to_source, "sldsc", excluded_sldsc_annotation_regex, stratified_present_category, paste0(visualization_dir, "sldmc_sldsc_annotation_forest_magnitude_bin", magnitude_bin_index, ".pdf"))
 	save_source_forest_plot(sldmc_magnitude_stratified_diff_df, anno_to_source, "gene_set", excluded_gene_set_annotation_regex, stratified_present_category, paste0(visualization_dir, "sldmc_gene_set_annotation_forest_magnitude_bin", magnitude_bin_index, ".pdf"))
 }
-}
+
+
+########################
+# S-LDSC annotation correlation forest plot: unstratified (top) vs conditional on borzoi magnitude
+# bin 3 (0.075-0.2; bottom), sharing the annotation x-axis
+########################
+sldsc_default_subset_df = subset_diff_by_source(sldmc_default_diff_df, anno_to_source, "sldsc")
+sldsc_stratified_subset_df = subset_diff_by_source(sldmc_magnitude_stratified_diff_df, anno_to_source, "sldsc")
+sldsc_correlation_stratification_plot = make_sldsc_correlation_stratification_forest_plot(sldsc_default_subset_df, sldsc_stratified_subset_df, excluded_sldsc_annotation_regex, 3, "0.075-0.2")
+sldsc_correlation_stratification_output_file = paste0(visualization_dir, "sldmc_sldsc_annotation_correlation_forest_unstratified_vs_magnitude_bin3.pdf")
+ggsave(sldsc_correlation_stratification_output_file, sldsc_correlation_stratification_plot, width=7.2, height=6.0)
+print(sldsc_correlation_stratification_output_file)
+
+
