@@ -571,6 +571,84 @@ make_sldsc_annotation_forest_plot <- function(diff_df, excluded_annotation_regex
 	)
 }
 
+make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log_sigma=NULL) {
+	# Faceted scatter (one panel per selected tissue) of the binned LD-moment results: each point is
+	# one bin of variant-gene pairs (binned on the intercept LD-moment), x = the bin's average
+	# LD-moment, y = the bin's average standardized eQTL effect size. The dashed y=x line marks
+	# perfect calibration; the solid tissue-colored line is the tissue's through-origin least squares
+	# fit to the binned averages, with its slope printed in the panel corner.
+	# Expects the all-tissue long df from load_in_per_tissue_ld_moments; rows are filtered to the
+	# tissues in tissue_colors, whose order sets the panel order.
+	# pseudo_log_sigma, when set, draws both axes on a signed pseudo-log scale (linear within about
+	# +/- sigma of zero, log-like beyond), spreading out the mass of near-zero bins. The fitted line
+	# is drawn from a grid of points rather than geom_abline so it curves correctly on those axes
+	# (the y=x line stays straight because both axes share the transform).
+	plot_df = df[df$tissue %in% names(tissue_colors), ]
+	missing_tissues = setdiff(names(tissue_colors), unique(plot_df$tissue))
+	if (length(missing_tissues) > 0) {
+		print(paste("WARNING: no binned LD-moment results for:", paste(missing_tissues, collapse=", ")))
+	}
+	if (nrow(plot_df) == 0) {
+		stop("No binned LD-moment rows found for any of the selected tissues")
+	}
+	tissue_levels = names(tissue_colors)[names(tissue_colors) %in% plot_df$tissue]
+	plot_df$tissue = factor(plot_df$tissue, levels=tissue_levels, labels=gsub("_", " ", tissue_levels))
+	tissue_colors_use = as.character(tissue_colors[tissue_levels])
+
+	# Through-origin least squares slope per tissue (fit to the binned averages), plus a fine grid
+	# of points tracing each fitted line across that tissue's LD-moment range
+	slope_df = data.frame()
+	fit_line_df = data.frame()
+	for (tissue_level in levels(plot_df$tissue)) {
+		tissue_rows = plot_df[plot_df$tissue == tissue_level, ]
+		tissue_slope = sum(tissue_rows$avg_ld_moment*tissue_rows$avg_std_eqtl_effect_size)/sum(tissue_rows$avg_ld_moment^2)
+		slope_df = rbind(slope_df, data.frame(tissue=tissue_level, slope=tissue_slope))
+		fit_grid = seq(min(tissue_rows$avg_ld_moment), max(tissue_rows$avg_ld_moment), length.out=200)
+		fit_line_df = rbind(fit_line_df, data.frame(tissue=tissue_level, avg_ld_moment=fit_grid, avg_std_eqtl_effect_size=tissue_slope*fit_grid))
+	}
+	slope_df$tissue = factor(slope_df$tissue, levels=levels(plot_df$tissue))
+	fit_line_df$tissue = factor(fit_line_df$tissue, levels=levels(plot_df$tissue))
+
+	# Axis scales: linear by default, signed pseudo-log around zero when pseudo_log_sigma is set
+	if (is.null(pseudo_log_sigma)) {
+		# Few axis breaks: the panels are narrow, so the default break count overlaps its labels
+		x_scale = scale_x_continuous(labels=number_format(accuracy=.01), breaks=pretty_breaks(n=3))
+		y_scale = scale_y_continuous(labels=number_format(accuracy=.01), breaks=pretty_breaks(n=4))
+	} else {
+		# The x labels sit side by side in narrow panels, so x gets fewer breaks than y
+		x_pseudo_log_breaks = c(-0.1, -0.01, 0, 0.01, 0.1)
+		x_pseudo_log_labels = c("-0.1", "-0.01", "0", "0.01", "0.1")
+		y_pseudo_log_breaks = c(-0.1, -0.03, -0.01, 0, 0.01, 0.03, 0.1)
+		y_pseudo_log_labels = c("-0.1", "-0.03", "-0.01", "0", "0.01", "0.03", "0.1")
+		x_scale = scale_x_continuous(trans=pseudo_log_trans(sigma=pseudo_log_sigma), breaks=x_pseudo_log_breaks, labels=x_pseudo_log_labels)
+		y_scale = scale_y_continuous(trans=pseudo_log_trans(sigma=pseudo_log_sigma), breaks=y_pseudo_log_breaks, labels=y_pseudo_log_labels)
+	}
+
+	return(
+		ggplot(plot_df, aes(x=avg_ld_moment, y=avg_std_eqtl_effect_size, color=tissue)) +
+		geom_abline(intercept=0, slope=1, linewidth=.4, color="#6B7280", linetype="dashed") +
+		geom_line(data=fit_line_df, linewidth=.45, show.legend=FALSE) +
+		geom_point(size=1.1, alpha=.75, show.legend=FALSE) +
+		geom_text(data=slope_df, aes(label=paste0("slope = ", sprintf("%.2f", slope))), x=Inf, y=-Inf, hjust=1.08, vjust=-0.9, size=2.9, color="#374151", show.legend=FALSE) +
+		# Panels are labeled by their strip, so the color legend is redundant
+		facet_wrap(~tissue, ncol=3) +
+		scale_color_manual(values=tissue_colors_use, guide="none") +
+		x_scale +
+		y_scale +
+		# Equal x/y scaling so the y=x line runs at 45 degrees and slope deviations are readable
+		coord_fixed() +
+		xlab("Average LD-propogated\nBorzoi effect size per bin") +
+		ylab("Average marginal\neQTL effect size per bin") +
+		figure_theme() +
+		theme(
+			strip.background=element_blank(),
+			strip.text=element_text(face="bold", size=10),
+			plot.margin=margin(8, 14, 8, 8)
+		)
+	)
+}
+
+
 make_sldsc_correlation_stratification_forest_plot <- function(default_diff_df, stratified_diff_df, excluded_annotation_regex, magnitude_bin_index, magnitude_bin_label) {
 	# Two-panel forest plot of the S-LDSC (binary) annotations' correlation difference from the
 	# intercept: the top panel is the unstratified estimate (all variant-gene pairs) and the bottom
@@ -789,6 +867,29 @@ make_simulation_estimate_bar_plot <- function(summary_df, oracle_df, ylab, bar_c
 	)
 }
 
+load_in_per_tissue_ld_moments <- function(tissue_info_df, ld_moments_output_dir) {
+	tiss_arr <- c()
+	ld_moments_arr <- c()
+	std_eqtl_arr <- c()
+	# Loop through tissues
+	for (tiss_iter in 1:nrow(tissue_info_df)) {
+		tissue_name = tissue_info_df$GTEx_tissue[tiss_iter]
+		tissue_sample = tissue_info_df$target_identifier[tiss_iter]
+		ld_moments_file = paste0(ld_moments_output_dir, "ld_moment_results_", tissue_name, "_", tissue_sample, "_default_binned_100_ld_moments.txt")
+		tmp_df = read.table(ld_moments_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+		
+		ld_moments_arr = c(ld_moments_arr, tmp_df$avg_ld_moment)
+		std_eqtl_arr = c(std_eqtl_arr, tmp_df$avg_std_eqtl_effect_size)
+		tiss_arr = c(tiss_arr, rep(tissue_name, nrow(tmp_df)))
+	}
+	df = data.frame(
+		tissue=tiss_arr,
+		avg_ld_moment=ld_moments_arr,
+		avg_std_eqtl_effect_size=std_eqtl_arr
+	)
+	return(df)
+
+}
 
 #######################
 # Command line args
@@ -801,6 +902,7 @@ annotation_name_file = args[5]
 simulation_oracle_results_dir = args[6]
 # Directory holding the per-tissue borzoi annotation files (source of the category-counts files)
 borzoi_annotation_dir = args[7]
+ld_moments_output_dir = args[8]
 
 
 ######################
@@ -835,6 +937,7 @@ joint_simulation <- plot_grid(simulation_calibration_plot, simulation_correlatio
 # Load in tissue info df
 tissue_info_df = read.table(tissue_names_file, header=TRUE, sep="\t")
 
+
 # Map each annotation to its source (sldsc / gene_set / custom) so the forest plots can be split by
 # source. The annotation list is (anno_name, source); the diff-stats file itself has no source column.
 annotation_source_df = read.table(annotation_name_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
@@ -852,6 +955,12 @@ sldmc_default_diff_df = read.table(paste0(sldmc_results_output_dir, "sldmc_resul
 
 # Load in meta-analyzed, magnitude-stratified S-LDMC results file
 sldmc_magnitude_stratified_df = read.table(paste0(sldmc_results_output_dir, "sldmc_results_cross_tissue_meta_analyzed_magnitude_stratified_bootstrap_stats.txt"), header=TRUE, sep="\t")
+
+
+# Load in binned LD moments for each tissue
+ld_moments_df = load_in_per_tissue_ld_moments(tissue_info_df, ld_moments_output_dir)
+
+
 
 ########################
 # Borzoi magnitude bin correlation and calibration plots showing distribution of per-tissue estimates
@@ -1104,5 +1213,22 @@ sldsc_correlation_stratification_plot = make_sldsc_correlation_stratification_fo
 sldsc_correlation_stratification_output_file = paste0(visualization_dir, "sldmc_sldsc_annotation_correlation_forest_unstratified_vs_magnitude_bin3.pdf")
 ggsave(sldsc_correlation_stratification_output_file, sldsc_correlation_stratification_plot, width=7.2, height=6.0)
 print(sldsc_correlation_stratification_output_file)
+
+
+########################
+# Binned intercept LD-moment vs average eQTL effect size for the five tissues (one point per bin
+# of variant-gene pairs, binned on the intercept LD-moment by extract_ld_moments.py)
+########################
+five_tissue_binned_ld_moment_plot = make_five_tissue_binned_ld_moment_plot(ld_moments_df, five_tissue_colors)
+five_tissue_binned_ld_moment_output_file = paste0(visualization_dir, "ld_moment_five_tissue_binned_eqtl_effect_calibration.pdf")
+ggsave(five_tissue_binned_ld_moment_output_file, five_tissue_binned_ld_moment_plot, width=7.2, height=5.0)
+print(five_tissue_binned_ld_moment_output_file)
+
+# Same plot with both axes on a signed pseudo-log scale around zero (linear within about +/- sigma,
+# log-like beyond), spreading out the mass of near-zero bins
+five_tissue_binned_ld_moment_pseudo_log_plot = make_five_tissue_binned_ld_moment_plot(ld_moments_df, five_tissue_colors, pseudo_log_sigma=0.003)
+five_tissue_binned_ld_moment_pseudo_log_output_file = paste0(visualization_dir, "ld_moment_five_tissue_binned_eqtl_effect_calibration_pseudo_log.pdf")
+ggsave(five_tissue_binned_ld_moment_pseudo_log_output_file, five_tissue_binned_ld_moment_pseudo_log_plot, width=7.2, height=5.0)
+print(five_tissue_binned_ld_moment_pseudo_log_output_file)
 
 
