@@ -82,9 +82,8 @@ fi
 ####################
 # Merge all pairwise expression differences results into a summary file
 ####################
-if false; then
 sh merge_expression_differences_results.sh $expression_differences_results_dir $anno_method
-fi
+
 
 
 ####################
