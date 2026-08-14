@@ -82,14 +82,18 @@ fi
 ####################
 # Merge all pairwise expression differences results into a summary file
 ####################
+if false; then
 sh merge_expression_differences_results.sh $expression_differences_results_dir $anno_method
-
+fi
 
 
 ####################
 # Visualize expression differences results
 ####################
+
+if false; then
 source ~/.bashrc
 conda activate plink_env
 Rscript visualize_expression_differences_results.R $expression_differences_results_dir $anno_method $visualize_expression_differences_results_dir
 
+fi
