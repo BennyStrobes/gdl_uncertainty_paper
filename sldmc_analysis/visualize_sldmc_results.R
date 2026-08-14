@@ -592,7 +592,10 @@ make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log
 		stop("No binned LD-moment rows found for any of the selected tissues")
 	}
 	tissue_levels = names(tissue_colors)[names(tissue_colors) %in% plot_df$tissue]
-	plot_df$tissue = factor(plot_df$tissue, levels=tissue_levels, labels=gsub("_", " ", tissue_levels))
+	tissue_labels = gsub("_", " ", tissue_levels)
+	# "Heart Left Ventricle" overflows the narrow panel strips, so it gets wrapped onto two lines
+	tissue_labels = gsub("^Heart Left Ventricle$", "Heart\nLeft Ventricle", tissue_labels)
+	plot_df$tissue = factor(plot_df$tissue, levels=tissue_levels, labels=tissue_labels)
 	tissue_colors_use = as.character(tissue_colors[tissue_levels])
 
 	# Through-origin least squares slope per tissue (fit to the binned averages), plus a fine grid
@@ -611,8 +614,8 @@ make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log
 
 	# Axis scales: linear by default, signed pseudo-log around zero when pseudo_log_sigma is set
 	if (is.null(pseudo_log_sigma)) {
-		# Few axis breaks: the panels are narrow, so the default break count overlaps its labels
-		x_scale = scale_x_continuous(labels=number_format(accuracy=.01), breaks=pretty_breaks(n=3))
+		# Few axis breaks and one-decimal labels: the panels are narrow, so anything more overlaps
+		x_scale = scale_x_continuous(labels=number_format(accuracy=.1), breaks=pretty_breaks(n=3))
 		y_scale = scale_y_continuous(labels=number_format(accuracy=.01), breaks=pretty_breaks(n=4))
 	} else {
 		# The x labels sit side by side in narrow panels, so x gets fewer breaks than y
@@ -631,14 +634,14 @@ make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log
 		geom_point(size=1.1, alpha=.75, show.legend=FALSE) +
 		geom_text(data=slope_df, aes(label=paste0("slope = ", sprintf("%.2f", slope))), x=Inf, y=-Inf, hjust=1.08, vjust=-0.9, size=2.9, color="#374151", show.legend=FALSE) +
 		# Panels are labeled by their strip, so the color legend is redundant
-		facet_wrap(~tissue, ncol=3) +
+		facet_wrap(~tissue, nrow=1) +
 		scale_color_manual(values=tissue_colors_use, guide="none") +
 		x_scale +
 		y_scale +
 		# Equal x/y scaling so the y=x line runs at 45 degrees and slope deviations are readable
 		coord_fixed() +
-		xlab("Average LD-propogated\nBorzoi effect size per bin") +
-		ylab("Average marginal\neQTL effect size per bin") +
+		xlab("Average LD-propogated Borzoi effect size") +
+		ylab("Average marginal\neQTL effect size") +
 		figure_theme() +
 		theme(
 			strip.background=element_blank(),
@@ -1221,14 +1224,8 @@ print(sldsc_correlation_stratification_output_file)
 ########################
 five_tissue_binned_ld_moment_plot = make_five_tissue_binned_ld_moment_plot(ld_moments_df, five_tissue_colors)
 five_tissue_binned_ld_moment_output_file = paste0(visualization_dir, "ld_moment_five_tissue_binned_eqtl_effect_calibration.pdf")
-ggsave(five_tissue_binned_ld_moment_output_file, five_tissue_binned_ld_moment_plot, width=7.2, height=5.0)
+ggsave(five_tissue_binned_ld_moment_output_file, five_tissue_binned_ld_moment_plot, width=7.2, height=1.95)
 print(five_tissue_binned_ld_moment_output_file)
 
-# Same plot with both axes on a signed pseudo-log scale around zero (linear within about +/- sigma,
-# log-like beyond), spreading out the mass of near-zero bins
-five_tissue_binned_ld_moment_pseudo_log_plot = make_five_tissue_binned_ld_moment_plot(ld_moments_df, five_tissue_colors, pseudo_log_sigma=0.003)
-five_tissue_binned_ld_moment_pseudo_log_output_file = paste0(visualization_dir, "ld_moment_five_tissue_binned_eqtl_effect_calibration_pseudo_log.pdf")
-ggsave(five_tissue_binned_ld_moment_pseudo_log_output_file, five_tissue_binned_ld_moment_pseudo_log_plot, width=7.2, height=5.0)
-print(five_tissue_binned_ld_moment_pseudo_log_output_file)
 
 
