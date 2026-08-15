@@ -62,9 +62,15 @@ done
 fi
 
 
-
-simulation_iter="1"
-sh run_multi_sample_size_correlation_simulation.sh $simulation_iter $gene_summary_file $correlation_causal_effect_dir $correlation_est_eqtl_effects_dir $correlation_borzoi_est_effect_dir $onek_genomes_plink_filestem $correlation_inference_results_dir $sldmc_code_dir
+######################
+# Iterate simulations across multiple eQTL sample sizes
+######################
+if false; then
+for simulation_iter in {1..50}
+do
+	sbatch run_multi_sample_size_correlation_simulation.sh $simulation_iter $gene_summary_file $correlation_causal_effect_dir $correlation_est_eqtl_effects_dir $correlation_borzoi_est_effect_dir $onek_genomes_plink_filestem $correlation_inference_results_dir $sldmc_code_dir
+done
+fi
 
 
 

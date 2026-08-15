@@ -55,43 +55,42 @@ def organize_expression_difference_results_into_arrays(expression_differnce_resu
     return gene_ids, obs_diffs, pred_diffs, snrs, instance_tissue_pair_labels
 
 
-def compute_observed_differences_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, snrs, snr_thresholds, n_bootstraps):
+def compute_observed_differences_over_instance_masks(gene_ids, obs_diffs, pred_diffs, instance_masks, n_bootstraps):
     """
-    At each SNR threshold, among instances with snr > threshold, compute the average observed
-    difference across predicted positives (pred_diff > 0) and across predicted negatives
-    (pred_diff < 0). Standard errors come from a gene-level block bootstrap (resample genes
-    with replacement; all instances of a resampled gene move together).
+    For each instance mask, among masked instances, compute the average observed difference
+    across predicted positives (pred_diff > 0) and across predicted negatives (pred_diff < 0).
+    Standard errors come from a gene-level block bootstrap (resample genes with replacement;
+    all instances of a resampled gene move together).
     """
     unique_genes, gene_indices = np.unique(gene_ids, return_inverse=True)
     n_genes = len(unique_genes)
-    n_thresholds = len(snr_thresholds)
+    n_masks = len(instance_masks)
 
     positive_indices = pred_diffs > 0.0
     negative_indices = pred_diffs < 0.0
 
-    # Per-gene sums and counts of observed differences among predicted positives/negatives, at each threshold
-    gene_pos_sums = np.zeros((n_genes, n_thresholds))
-    gene_pos_counts = np.zeros((n_genes, n_thresholds))
-    gene_neg_sums = np.zeros((n_genes, n_thresholds))
-    gene_neg_counts = np.zeros((n_genes, n_thresholds))
-    for threshold_iter, snr_threshold in enumerate(snr_thresholds):
-        passing_indices = snrs > snr_threshold
-        pos = passing_indices & positive_indices
-        neg = passing_indices & negative_indices
-        gene_pos_sums[:, threshold_iter] = np.bincount(gene_indices[pos], weights=obs_diffs[pos], minlength=n_genes)
-        gene_pos_counts[:, threshold_iter] = np.bincount(gene_indices[pos], minlength=n_genes)
-        gene_neg_sums[:, threshold_iter] = np.bincount(gene_indices[neg], weights=obs_diffs[neg], minlength=n_genes)
-        gene_neg_counts[:, threshold_iter] = np.bincount(gene_indices[neg], minlength=n_genes)
+    # Per-gene sums and counts of observed differences among predicted positives/negatives, per mask
+    gene_pos_sums = np.zeros((n_genes, n_masks))
+    gene_pos_counts = np.zeros((n_genes, n_masks))
+    gene_neg_sums = np.zeros((n_genes, n_masks))
+    gene_neg_counts = np.zeros((n_genes, n_masks))
+    for mask_iter, instance_mask in enumerate(instance_masks):
+        pos = instance_mask & positive_indices
+        neg = instance_mask & negative_indices
+        gene_pos_sums[:, mask_iter] = np.bincount(gene_indices[pos], weights=obs_diffs[pos], minlength=n_genes)
+        gene_pos_counts[:, mask_iter] = np.bincount(gene_indices[pos], minlength=n_genes)
+        gene_neg_sums[:, mask_iter] = np.bincount(gene_indices[neg], weights=obs_diffs[neg], minlength=n_genes)
+        gene_neg_counts[:, mask_iter] = np.bincount(gene_indices[neg], minlength=n_genes)
 
-    # Observed averages at each threshold (nan if no instances pass)
+    # Observed averages per mask (nan if no instances)
     with np.errstate(invalid='ignore', divide='ignore'):
         avg_obs_diff_pos = np.sum(gene_pos_sums, axis=0)/np.sum(gene_pos_counts, axis=0)
         avg_obs_diff_neg = np.sum(gene_neg_sums, axis=0)/np.sum(gene_neg_counts, axis=0)
 
     # Gene-level block bootstrap
     np.random.seed(0)
-    bs_avg_pos = np.zeros((n_bootstraps, n_thresholds))
-    bs_avg_neg = np.zeros((n_bootstraps, n_thresholds))
+    bs_avg_pos = np.zeros((n_bootstraps, n_masks))
+    bs_avg_neg = np.zeros((n_bootstraps, n_masks))
     for bs_iter in range(n_bootstraps):
         # Multiplicity of each gene in this bootstrap sample
         bs_gene_multiplicities = np.bincount(np.random.choice(n_genes, size=n_genes, replace=True), minlength=n_genes)
@@ -107,32 +106,41 @@ def compute_observed_differences_stratified_by_snr_thresholds(gene_ids, obs_diff
     return avg_obs_diff_pos, avg_obs_diff_pos_se, avg_obs_diff_neg, avg_obs_diff_neg_se, n_pos_instances, n_neg_instances
 
 
-def compute_sign_concordance_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, snrs, snr_thresholds, n_bootstraps):
+def compute_observed_differences_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, snrs, snr_thresholds, n_bootstraps):
     """
-    At each SNR threshold, among instances with snr > threshold, compute the fraction of instances
-    where the sign of the observed difference matches the sign of the predicted difference.
+    At each threshold, among instances whose stratification value (the snrs argument; any
+    quantity works) exceeds the threshold, compute the average observed difference across
+    predicted positives/negatives.
+    """
+    instance_masks = [snrs > snr_threshold for snr_threshold in snr_thresholds]
+    return compute_observed_differences_over_instance_masks(gene_ids, obs_diffs, pred_diffs, instance_masks, n_bootstraps)
+
+
+def compute_sign_concordance_over_instance_masks(gene_ids, obs_diffs, pred_diffs, instance_masks, n_bootstraps):
+    """
+    For each instance mask, among masked instances, compute the fraction of instances where the
+    sign of the observed difference matches the sign of the predicted difference.
     Standard errors come from a gene-level block bootstrap.
     """
     unique_genes, gene_indices = np.unique(gene_ids, return_inverse=True)
     n_genes = len(unique_genes)
-    n_thresholds = len(snr_thresholds)
+    n_masks = len(instance_masks)
 
     concordant_indices = np.sign(obs_diffs) == np.sign(pred_diffs)
 
-    # Per-gene concordant counts and total counts at each threshold
-    gene_concordant_counts = np.zeros((n_genes, n_thresholds))
-    gene_counts = np.zeros((n_genes, n_thresholds))
-    for threshold_iter, snr_threshold in enumerate(snr_thresholds):
-        passing_indices = snrs > snr_threshold
-        gene_concordant_counts[:, threshold_iter] = np.bincount(gene_indices[passing_indices & concordant_indices], minlength=n_genes)
-        gene_counts[:, threshold_iter] = np.bincount(gene_indices[passing_indices], minlength=n_genes)
+    # Per-gene concordant counts and total counts per mask
+    gene_concordant_counts = np.zeros((n_genes, n_masks))
+    gene_counts = np.zeros((n_genes, n_masks))
+    for mask_iter, instance_mask in enumerate(instance_masks):
+        gene_concordant_counts[:, mask_iter] = np.bincount(gene_indices[instance_mask & concordant_indices], minlength=n_genes)
+        gene_counts[:, mask_iter] = np.bincount(gene_indices[instance_mask], minlength=n_genes)
 
     with np.errstate(invalid='ignore', divide='ignore'):
         sign_concordances = np.sum(gene_concordant_counts, axis=0)/np.sum(gene_counts, axis=0)
 
     # Gene-level block bootstrap
     np.random.seed(0)
-    bs_concordances = np.zeros((n_bootstraps, n_thresholds))
+    bs_concordances = np.zeros((n_bootstraps, n_masks))
     for bs_iter in range(n_bootstraps):
         bs_gene_multiplicities = np.bincount(np.random.choice(n_genes, size=n_genes, replace=True), minlength=n_genes)
         with np.errstate(invalid='ignore', divide='ignore'):
@@ -144,30 +152,38 @@ def compute_sign_concordance_stratified_by_snr_thresholds(gene_ids, obs_diffs, p
     return sign_concordances, sign_concordance_ses, n_instances
 
 
-def compute_obs_vs_pred_slope_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, snrs, snr_thresholds, n_bootstraps):
+def compute_sign_concordance_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, snrs, snr_thresholds, n_bootstraps):
     """
-    At each SNR threshold, among instances with snr > threshold, compute the regression slope of
-    observed differences on predicted differences (calibration slope; 1 = calibrated magnitudes).
+    At each threshold, among instances whose stratification value (the snrs argument; any
+    quantity works) exceeds the threshold, compute the sign concordance.
+    """
+    instance_masks = [snrs > snr_threshold for snr_threshold in snr_thresholds]
+    return compute_sign_concordance_over_instance_masks(gene_ids, obs_diffs, pred_diffs, instance_masks, n_bootstraps)
+
+
+def compute_obs_vs_pred_slope_over_instance_masks(gene_ids, obs_diffs, pred_diffs, instance_masks, n_bootstraps):
+    """
+    For each instance mask, among masked instances, compute the regression slope of observed
+    differences on predicted differences (calibration slope; 1 = calibrated magnitudes).
     Standard errors come from a gene-level block bootstrap, propagated through per-gene sufficient
     statistics (n, sum_x, sum_y, sum_xx, sum_xy with x=predicted, y=observed).
     """
     unique_genes, gene_indices = np.unique(gene_ids, return_inverse=True)
     n_genes = len(unique_genes)
-    n_thresholds = len(snr_thresholds)
+    n_masks = len(instance_masks)
 
-    gene_ns = np.zeros((n_genes, n_thresholds))
-    gene_sum_xs = np.zeros((n_genes, n_thresholds))
-    gene_sum_ys = np.zeros((n_genes, n_thresholds))
-    gene_sum_xxs = np.zeros((n_genes, n_thresholds))
-    gene_sum_xys = np.zeros((n_genes, n_thresholds))
-    for threshold_iter, snr_threshold in enumerate(snr_thresholds):
-        passing_indices = snrs > snr_threshold
-        passing_gene_indices = gene_indices[passing_indices]
-        gene_ns[:, threshold_iter] = np.bincount(passing_gene_indices, minlength=n_genes)
-        gene_sum_xs[:, threshold_iter] = np.bincount(passing_gene_indices, weights=pred_diffs[passing_indices], minlength=n_genes)
-        gene_sum_ys[:, threshold_iter] = np.bincount(passing_gene_indices, weights=obs_diffs[passing_indices], minlength=n_genes)
-        gene_sum_xxs[:, threshold_iter] = np.bincount(passing_gene_indices, weights=np.square(pred_diffs[passing_indices]), minlength=n_genes)
-        gene_sum_xys[:, threshold_iter] = np.bincount(passing_gene_indices, weights=pred_diffs[passing_indices]*obs_diffs[passing_indices], minlength=n_genes)
+    gene_ns = np.zeros((n_genes, n_masks))
+    gene_sum_xs = np.zeros((n_genes, n_masks))
+    gene_sum_ys = np.zeros((n_genes, n_masks))
+    gene_sum_xxs = np.zeros((n_genes, n_masks))
+    gene_sum_xys = np.zeros((n_genes, n_masks))
+    for mask_iter, instance_mask in enumerate(instance_masks):
+        masked_gene_indices = gene_indices[instance_mask]
+        gene_ns[:, mask_iter] = np.bincount(masked_gene_indices, minlength=n_genes)
+        gene_sum_xs[:, mask_iter] = np.bincount(masked_gene_indices, weights=pred_diffs[instance_mask], minlength=n_genes)
+        gene_sum_ys[:, mask_iter] = np.bincount(masked_gene_indices, weights=obs_diffs[instance_mask], minlength=n_genes)
+        gene_sum_xxs[:, mask_iter] = np.bincount(masked_gene_indices, weights=np.square(pred_diffs[instance_mask]), minlength=n_genes)
+        gene_sum_xys[:, mask_iter] = np.bincount(masked_gene_indices, weights=pred_diffs[instance_mask]*obs_diffs[instance_mask], minlength=n_genes)
 
     def slope_from_sufficient_stats(nn, sum_x, sum_y, sum_xx, sum_xy):
         with np.errstate(invalid='ignore', divide='ignore'):
@@ -177,7 +193,7 @@ def compute_obs_vs_pred_slope_stratified_by_snr_thresholds(gene_ids, obs_diffs, 
 
     # Gene-level block bootstrap
     np.random.seed(0)
-    bs_slopes = np.zeros((n_bootstraps, n_thresholds))
+    bs_slopes = np.zeros((n_bootstraps, n_masks))
     for bs_iter in range(n_bootstraps):
         bs_gene_multiplicities = np.bincount(np.random.choice(n_genes, size=n_genes, replace=True), minlength=n_genes)
         bs_slopes[bs_iter, :] = slope_from_sufficient_stats(np.dot(bs_gene_multiplicities, gene_ns), np.dot(bs_gene_multiplicities, gene_sum_xs), np.dot(bs_gene_multiplicities, gene_sum_ys), np.dot(bs_gene_multiplicities, gene_sum_xxs), np.dot(bs_gene_multiplicities, gene_sum_xys))
@@ -186,6 +202,45 @@ def compute_obs_vs_pred_slope_stratified_by_snr_thresholds(gene_ids, obs_diffs, 
     n_instances = np.sum(gene_ns, axis=0)
 
     return obs_vs_pred_slopes, obs_vs_pred_slope_ses, n_instances
+
+
+def compute_obs_vs_pred_slope_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, snrs, snr_thresholds, n_bootstraps):
+    """
+    At each threshold, among instances whose stratification value (the snrs argument; any
+    quantity works) exceeds the threshold, compute the observed-vs-predicted regression slope.
+    """
+    instance_masks = [snrs > snr_threshold for snr_threshold in snr_thresholds]
+    return compute_obs_vs_pred_slope_over_instance_masks(gene_ids, obs_diffs, pred_diffs, instance_masks, n_bootstraps)
+
+
+def assign_quantile_bins(values, n_bins):
+    """
+    Split instances into n_bins equal-count (quantile) bins of values. Returns the per-instance
+    bin assignment (0 = lowest bin) and the average value within each bin (the bin's x-coordinate
+    for plotting).
+    """
+    bin_edges = np.quantile(values, np.linspace(0.0, 1.0, n_bins + 1))
+    bin_assignments = np.searchsorted(bin_edges, values, side='right') - 1
+    bin_assignments = np.clip(bin_assignments, 0, n_bins - 1)
+    bin_sums = np.bincount(bin_assignments, weights=values, minlength=n_bins)
+    bin_counts = np.bincount(bin_assignments, minlength=n_bins)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        bin_avg_values = bin_sums/bin_counts
+    return bin_assignments, bin_avg_values
+
+
+def compute_over_quantile_bins_in_chunks(core_fn, gene_ids, obs_diffs, pred_diffs, bin_assignments, n_bins, n_bootstraps, bin_chunk_size=100):
+    """
+    Run a *_over_instance_masks core one chunk of bins at a time and concatenate the results.
+    Caps peak memory: the cores allocate (n_genes x n_masks) matrices, so a full call at large
+    n_bins is several GB while chunks stay small. Results match the unchunked call because each
+    core call reseeds its bootstrap RNG, so every chunk sees the identical gene multiplicities.
+    """
+    chunk_results = []
+    for chunk_start in range(0, n_bins, bin_chunk_size):
+        chunk_bin_masks = [bin_assignments == bin_iter for bin_iter in range(chunk_start, min(chunk_start + bin_chunk_size, n_bins))]
+        chunk_results.append(core_fn(gene_ids, obs_diffs, pred_diffs, chunk_bin_masks, n_bootstraps))
+    return tuple(np.concatenate(result_arrays) for result_arrays in zip(*chunk_results))
 
 
 def compute_binned_observed_vs_predicted_differences(gene_ids, obs_diffs, pred_diffs, n_pred_diff_bins, n_bootstraps):
@@ -256,6 +311,7 @@ anno_method = args.anno_method
 tissue_sample_pairs=["Heart_Left_Ventricle:GTEX-18465-0926-SM-731AY.1", "Brain_Cortex:GTEX-1H3O1-1726-SM-9WYSR.1", "Liver:GTEX-11EQ9-0526-SM-5A5JZ.1", "Whole_Blood:GTEX-1LB8K-0005-SM-DIPED.1", "Muscle_Skeletal:GTEX-13QJ3-0726-SM-5SI68.1"]
 n_bootstraps=500
 n_pred_diff_bins=20
+n_stratification_quantile_bins=10000
 per_tissue_pair_snr_threshold=0.5
 
 
@@ -270,6 +326,10 @@ gene_ids, obs_diffs, pred_diffs, snrs, instance_tissue_pair_labels = organize_ex
 
 # Continuous grid of SNR thresholds (0 through the 99.99th percentile of observed SNRs)
 snr_thresholds = np.linspace(0.0, np.quantile(snrs, 0.9999), 200)
+
+# Continuous grid of absolute predicted difference thresholds (0 through the 99.99th percentile)
+abs_pred_diffs = np.abs(pred_diffs)
+abs_pred_diff_thresholds = np.linspace(0.0, np.quantile(abs_pred_diffs, 0.9999), 200)
 
 
 ##################################
@@ -343,3 +403,86 @@ for per_pair_result in per_pair_results:
     t.write('\t' + str(per_pair_result[3]) + '\t' + str(per_pair_result[4]) + '\t' + str(int(per_pair_result[5])) + '\t' + str(int(per_pair_result[6])) + '\n')
 t.close()
 print(output_file)
+
+
+##################################
+# 6. Average observed difference among predicted positives/negatives at each absolute predicted difference threshold
+# (the SNR-stratification functions threshold on whatever values occupy the snr slot)
+##################################
+apd_avg_obs_diff_pos, apd_avg_obs_diff_pos_se, apd_avg_obs_diff_neg, apd_avg_obs_diff_neg_se, apd_n_pos_instances, apd_n_neg_instances = compute_observed_differences_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, abs_pred_diffs, abs_pred_diff_thresholds, n_bootstraps)
+
+output_file = expression_differences_results_dir + 'observed_differences_stratified_by_abs_pred_diff_thresholds_' + anno_method + '.txt'
+t = open(output_file, 'w')
+t.write('abs_pred_diff_threshold\tavg_observed_diff_predicted_positives\tavg_observed_diff_predicted_positives_se\tavg_observed_diff_predicted_negatives\tavg_observed_diff_predicted_negatives_se\tn_predicted_positives\tn_predicted_negatives\n')
+for threshold_iter, abs_pred_diff_threshold in enumerate(abs_pred_diff_thresholds):
+    t.write(str(abs_pred_diff_threshold) + '\t' + str(apd_avg_obs_diff_pos[threshold_iter]) + '\t' + str(apd_avg_obs_diff_pos_se[threshold_iter]))
+    t.write('\t' + str(apd_avg_obs_diff_neg[threshold_iter]) + '\t' + str(apd_avg_obs_diff_neg_se[threshold_iter]))
+    t.write('\t' + str(int(apd_n_pos_instances[threshold_iter])) + '\t' + str(int(apd_n_neg_instances[threshold_iter])) + '\n')
+t.close()
+print(output_file)
+
+
+##################################
+# 7. Sign concordance at each absolute predicted difference threshold
+##################################
+apd_sign_concordances, apd_sign_concordance_ses, apd_n_concordance_instances = compute_sign_concordance_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, abs_pred_diffs, abs_pred_diff_thresholds, n_bootstraps)
+
+output_file = expression_differences_results_dir + 'sign_concordance_stratified_by_abs_pred_diff_thresholds_' + anno_method + '.txt'
+t = open(output_file, 'w')
+t.write('abs_pred_diff_threshold\tsign_concordance\tsign_concordance_se\tn_instances\n')
+for threshold_iter, abs_pred_diff_threshold in enumerate(abs_pred_diff_thresholds):
+    t.write(str(abs_pred_diff_threshold) + '\t' + str(apd_sign_concordances[threshold_iter]) + '\t' + str(apd_sign_concordance_ses[threshold_iter]) + '\t' + str(int(apd_n_concordance_instances[threshold_iter])) + '\n')
+t.close()
+print(output_file)
+
+
+##################################
+# 8. Regression slope of observed on predicted differences at each absolute predicted difference threshold
+##################################
+apd_obs_vs_pred_slopes, apd_obs_vs_pred_slope_ses, apd_n_slope_instances = compute_obs_vs_pred_slope_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, abs_pred_diffs, abs_pred_diff_thresholds, n_bootstraps)
+
+output_file = expression_differences_results_dir + 'observed_vs_predicted_slope_stratified_by_abs_pred_diff_thresholds_' + anno_method + '.txt'
+t = open(output_file, 'w')
+t.write('abs_pred_diff_threshold\tobs_vs_pred_slope\tobs_vs_pred_slope_se\tn_instances\n')
+for threshold_iter, abs_pred_diff_threshold in enumerate(abs_pred_diff_thresholds):
+    t.write(str(abs_pred_diff_threshold) + '\t' + str(apd_obs_vs_pred_slopes[threshold_iter]) + '\t' + str(apd_obs_vs_pred_slope_ses[threshold_iter]) + '\t' + str(int(apd_n_slope_instances[threshold_iter])) + '\n')
+t.close()
+print(output_file)
+
+
+##################################
+# 9. Observed differences, sign concordance, and obs-vs-pred slope in equal-count quantile bins
+# of SNR and (separately) of the absolute predicted difference. Unlike the threshold analyses
+# above (nested tails), bins are non-overlapping and each holds ~1/n_bins of the instances.
+##################################
+for stratification_name, stratification_values in [('snr', snrs), ('abs_pred_diff', abs_pred_diffs)]:
+    bin_assignments, bin_avg_values = assign_quantile_bins(stratification_values, n_stratification_quantile_bins)
+
+    bin_avg_obs_diff_pos, bin_avg_obs_diff_pos_se, bin_avg_obs_diff_neg, bin_avg_obs_diff_neg_se, bin_n_pos_instances, bin_n_neg_instances = compute_over_quantile_bins_in_chunks(compute_observed_differences_over_instance_masks, gene_ids, obs_diffs, pred_diffs, bin_assignments, n_stratification_quantile_bins, n_bootstraps)
+    output_file = expression_differences_results_dir + 'observed_differences_in_' + stratification_name + '_quantile_bins_' + anno_method + '.txt'
+    t = open(output_file, 'w')
+    t.write('bin_index\tavg_' + stratification_name + '\tavg_observed_diff_predicted_positives\tavg_observed_diff_predicted_positives_se\tavg_observed_diff_predicted_negatives\tavg_observed_diff_predicted_negatives_se\tn_predicted_positives\tn_predicted_negatives\n')
+    for bin_iter in range(n_stratification_quantile_bins):
+        t.write(str(bin_iter) + '\t' + str(bin_avg_values[bin_iter]) + '\t' + str(bin_avg_obs_diff_pos[bin_iter]) + '\t' + str(bin_avg_obs_diff_pos_se[bin_iter]))
+        t.write('\t' + str(bin_avg_obs_diff_neg[bin_iter]) + '\t' + str(bin_avg_obs_diff_neg_se[bin_iter]))
+        t.write('\t' + str(int(bin_n_pos_instances[bin_iter])) + '\t' + str(int(bin_n_neg_instances[bin_iter])) + '\n')
+    t.close()
+    print(output_file)
+
+    bin_sign_concordances, bin_sign_concordance_ses, bin_n_concordance_instances = compute_over_quantile_bins_in_chunks(compute_sign_concordance_over_instance_masks, gene_ids, obs_diffs, pred_diffs, bin_assignments, n_stratification_quantile_bins, n_bootstraps)
+    output_file = expression_differences_results_dir + 'sign_concordance_in_' + stratification_name + '_quantile_bins_' + anno_method + '.txt'
+    t = open(output_file, 'w')
+    t.write('bin_index\tavg_' + stratification_name + '\tsign_concordance\tsign_concordance_se\tn_instances\n')
+    for bin_iter in range(n_stratification_quantile_bins):
+        t.write(str(bin_iter) + '\t' + str(bin_avg_values[bin_iter]) + '\t' + str(bin_sign_concordances[bin_iter]) + '\t' + str(bin_sign_concordance_ses[bin_iter]) + '\t' + str(int(bin_n_concordance_instances[bin_iter])) + '\n')
+    t.close()
+    print(output_file)
+
+    bin_obs_vs_pred_slopes, bin_obs_vs_pred_slope_ses, bin_n_slope_instances = compute_over_quantile_bins_in_chunks(compute_obs_vs_pred_slope_over_instance_masks, gene_ids, obs_diffs, pred_diffs, bin_assignments, n_stratification_quantile_bins, n_bootstraps)
+    output_file = expression_differences_results_dir + 'observed_vs_predicted_slope_in_' + stratification_name + '_quantile_bins_' + anno_method + '.txt'
+    t = open(output_file, 'w')
+    t.write('bin_index\tavg_' + stratification_name + '\tobs_vs_pred_slope\tobs_vs_pred_slope_se\tn_instances\n')
+    for bin_iter in range(n_stratification_quantile_bins):
+        t.write(str(bin_iter) + '\t' + str(bin_avg_values[bin_iter]) + '\t' + str(bin_obs_vs_pred_slopes[bin_iter]) + '\t' + str(bin_obs_vs_pred_slope_ses[bin_iter]) + '\t' + str(int(bin_n_slope_instances[bin_iter])) + '\n')
+    t.close()
+    print(output_file)

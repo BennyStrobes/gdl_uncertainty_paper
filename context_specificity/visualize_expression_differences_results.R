@@ -10,20 +10,21 @@ figure_theme <- function() {
 }
 
 
-make_observed_difference_by_snr_threshold_plot <- function(df, plot_title) {
-	# Line plot of the average observed expression difference among instances passing each SNR
-	# threshold, separately for predicted positives (pred diff > 0) and predicted negatives
-	# (pred diff < 0). Ribbons are gaussian-approximation 95% CIs from the gene-block bootstrap SEs.
+make_observed_difference_by_threshold_plot <- function(df, plot_title, threshold_colname, x_axis_label) {
+	# Line plot of the average observed expression difference among instances passing each
+	# threshold (column threshold_colname), separately for predicted positives (pred diff > 0) and
+	# predicted negatives (pred diff < 0). Ribbons are gaussian-approximation 95% CIs from the
+	# gene-block bootstrap SEs.
 	long_df = rbind(
 		data.frame(
-			snr_threshold=df$snr_threshold,
+			threshold=df[[threshold_colname]],
 			prediction_class="Predicted positives",
 			avg_observed_diff=df$avg_observed_diff_predicted_positives,
 			se=df$avg_observed_diff_predicted_positives_se,
 			stringsAsFactors=FALSE
 		),
 		data.frame(
-			snr_threshold=df$snr_threshold,
+			threshold=df[[threshold_colname]],
 			prediction_class="Predicted negatives",
 			avg_observed_diff=df$avg_observed_diff_predicted_negatives,
 			se=df$avg_observed_diff_predicted_negatives_se,
@@ -36,13 +37,13 @@ make_observed_difference_by_snr_threshold_plot <- function(df, plot_title) {
 	long_df$ci_lower = long_df$avg_observed_diff - 1.96*long_df$se
 	long_df$ci_upper = long_df$avg_observed_diff + 1.96*long_df$se
 	return(
-		ggplot(long_df, aes(x=snr_threshold, y=avg_observed_diff, color=prediction_class, fill=prediction_class)) +
+		ggplot(long_df, aes(x=threshold, y=avg_observed_diff, color=prediction_class, fill=prediction_class)) +
 		geom_hline(yintercept=0, linewidth=.4, color="#6B7280", linetype="dashed") +
 		geom_ribbon(aes(ymin=ci_lower, ymax=ci_upper), alpha=.18, color=NA) +
 		geom_line(linewidth=.7) +
 		scale_color_manual(values=c("Predicted positives"="#3E7A34", "Predicted negatives"="#D06A4B"), name="") +
 		scale_fill_manual(values=c("Predicted positives"="#3E7A34", "Predicted negatives"="#D06A4B"), name="") +
-		xlab("SNR threshold") +
+		xlab(x_axis_label) +
 		ylab("Average observed expression difference") +
 		ggtitle(plot_title) +
 		figure_theme() +
@@ -71,18 +72,20 @@ make_observed_vs_predicted_calibration_plot <- function(df, plot_title) {
 }
 
 
-make_sign_concordance_plot <- function(df, plot_title) {
-	# Fraction of instances passing each SNR threshold where sign(observed diff) == sign(predicted diff).
+make_sign_concordance_plot <- function(df, plot_title, threshold_colname, x_axis_label) {
+	# Fraction of instances passing each threshold (column threshold_colname) where
+	# sign(observed diff) == sign(predicted diff).
+	df$threshold = df[[threshold_colname]]
 	df = df[is.finite(df$sign_concordance), ]
 	# Gaussian approximation confidence intervals
 	df$ci_lower = df$sign_concordance - 1.96*df$sign_concordance_se
 	df$ci_upper = df$sign_concordance + 1.96*df$sign_concordance_se
 	return(
-		ggplot(df, aes(x=snr_threshold, y=sign_concordance)) +
+		ggplot(df, aes(x=threshold, y=sign_concordance)) +
 		geom_hline(yintercept=0.5, linewidth=.4, color="#6B7280", linetype="dashed") +
 		geom_ribbon(aes(ymin=ci_lower, ymax=ci_upper), alpha=.18, fill="#4C78A8") +
 		geom_line(linewidth=.7, color="#4C78A8") +
-		xlab("SNR threshold") +
+		xlab(x_axis_label) +
 		ylab("Sign concordance") +
 		ggtitle(plot_title) +
 		figure_theme()
@@ -90,20 +93,21 @@ make_sign_concordance_plot <- function(df, plot_title) {
 }
 
 
-make_obs_vs_pred_slope_plot <- function(df, plot_title) {
-	# Regression slope of observed on predicted differences among instances passing each SNR
-	# threshold. 1 (dashed line) indicates calibrated prediction magnitudes.
+make_obs_vs_pred_slope_plot <- function(df, plot_title, threshold_colname, x_axis_label) {
+	# Regression slope of observed on predicted differences among instances passing each
+	# threshold (column threshold_colname). 1 (dashed line) indicates calibrated prediction magnitudes.
+	df$threshold = df[[threshold_colname]]
 	df = df[is.finite(df$obs_vs_pred_slope), ]
 	# Gaussian approximation confidence intervals
 	df$ci_lower = df$obs_vs_pred_slope - 1.96*df$obs_vs_pred_slope_se
 	df$ci_upper = df$obs_vs_pred_slope + 1.96*df$obs_vs_pred_slope_se
 	return(
-		ggplot(df, aes(x=snr_threshold, y=obs_vs_pred_slope)) +
+		ggplot(df, aes(x=threshold, y=obs_vs_pred_slope)) +
 		geom_hline(yintercept=1.0, linewidth=.4, color="#D06A4B", linetype="dashed") +
 		geom_hline(yintercept=0.0, linewidth=.4, color="#6B7280", linetype="dashed") +
 		geom_ribbon(aes(ymin=ci_lower, ymax=ci_upper), alpha=.18, fill="#4C78A8") +
 		geom_line(linewidth=.7, color="#4C78A8") +
-		xlab("SNR threshold") +
+		xlab(x_axis_label) +
 		ylab("Observed vs predicted slope") +
 		ggtitle(plot_title) +
 		figure_theme()
@@ -111,20 +115,20 @@ make_obs_vs_pred_slope_plot <- function(df, plot_title) {
 }
 
 
-make_instance_counts_plot <- function(df, plot_title) {
-	# Number of instances passing each SNR threshold, per prediction class (log10 y-axis).
+make_instance_counts_plot <- function(df, plot_title, threshold_colname, x_axis_label) {
+	# Number of instances passing each threshold (column threshold_colname), per prediction class (log10 y-axis).
 	long_df = rbind(
-		data.frame(snr_threshold=df$snr_threshold, prediction_class="Predicted positives", n_instances=df$n_predicted_positives, stringsAsFactors=FALSE),
-		data.frame(snr_threshold=df$snr_threshold, prediction_class="Predicted negatives", n_instances=df$n_predicted_negatives, stringsAsFactors=FALSE)
+		data.frame(threshold=df[[threshold_colname]], prediction_class="Predicted positives", n_instances=df$n_predicted_positives, stringsAsFactors=FALSE),
+		data.frame(threshold=df[[threshold_colname]], prediction_class="Predicted negatives", n_instances=df$n_predicted_negatives, stringsAsFactors=FALSE)
 	)
 	long_df = long_df[long_df$n_instances > 0, ]
 	long_df$prediction_class = factor(long_df$prediction_class, levels=c("Predicted positives", "Predicted negatives"))
 	return(
-		ggplot(long_df, aes(x=snr_threshold, y=n_instances, color=prediction_class)) +
+		ggplot(long_df, aes(x=threshold, y=n_instances, color=prediction_class)) +
 		geom_line(linewidth=.7) +
 		scale_color_manual(values=c("Predicted positives"="#3E7A34", "Predicted negatives"="#D06A4B"), name="") +
 		scale_y_log10(labels=comma_format()) +
-		xlab("SNR threshold") +
+		xlab(x_axis_label) +
 		ylab("Instances passing threshold") +
 		ggtitle(plot_title) +
 		figure_theme() +
@@ -194,7 +198,7 @@ merged_df = read.table(merged_results_file, header=TRUE, sep="\t", stringsAsFact
 #########################
 # Observed expression differences stratified by SNR threshold
 #########################
-snr_threshold_plot = make_observed_difference_by_snr_threshold_plot(merged_df, "")
+snr_threshold_plot = make_observed_difference_by_threshold_plot(merged_df, "", "snr_threshold", "SNR threshold")
 snr_threshold_plot_output_file = paste0(visualization_dir, "observed_differences_stratified_by_snr_thresholds_", anno_method, ".pdf")
 ggsave(snr_threshold_plot_output_file, snr_threshold_plot + theme(legend.position="top"), width=7.2, height=3.6)
 
@@ -202,7 +206,7 @@ ggsave(snr_threshold_plot_output_file, snr_threshold_plot + theme(legend.positio
 #########################
 # Instances passing each SNR threshold (from the same merged file)
 #########################
-instance_counts_plot = make_instance_counts_plot(merged_df, "")
+instance_counts_plot = make_instance_counts_plot(merged_df, "", "snr_threshold", "SNR threshold")
 instance_counts_plot_output_file = paste0(visualization_dir, "instance_counts_stratified_by_snr_thresholds_", anno_method, ".pdf")
 ggsave(instance_counts_plot_output_file, instance_counts_plot, width=7.2, height=3.6)
 
@@ -212,7 +216,7 @@ ggsave(instance_counts_plot_output_file, instance_counts_plot, width=7.2, height
 #########################
 concordance_file = paste0(expression_differences_results_dir, "sign_concordance_stratified_by_snr_thresholds_", anno_method, ".txt")
 concordance_df = read.table(concordance_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
-sign_concordance_plot = make_sign_concordance_plot(concordance_df, "")
+sign_concordance_plot = make_sign_concordance_plot(concordance_df, "", "snr_threshold", "SNR threshold")
 sign_concordance_plot_output_file = paste0(visualization_dir, "sign_concordance_stratified_by_snr_thresholds_", anno_method, ".pdf")
 ggsave(sign_concordance_plot_output_file, sign_concordance_plot, width=7.2, height=3.6)
 
@@ -222,7 +226,7 @@ ggsave(sign_concordance_plot_output_file, sign_concordance_plot, width=7.2, heig
 #########################
 slope_file = paste0(expression_differences_results_dir, "observed_vs_predicted_slope_stratified_by_snr_thresholds_", anno_method, ".txt")
 slope_df = read.table(slope_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
-obs_vs_pred_slope_plot = make_obs_vs_pred_slope_plot(slope_df, "")
+obs_vs_pred_slope_plot = make_obs_vs_pred_slope_plot(slope_df, "", "snr_threshold", "SNR threshold")
 obs_vs_pred_slope_plot_output_file = paste0(visualization_dir, "observed_vs_predicted_slope_stratified_by_snr_thresholds_", anno_method, ".pdf")
 ggsave(obs_vs_pred_slope_plot_output_file, obs_vs_pred_slope_plot, width=7.2, height=3.6)
 
@@ -246,3 +250,73 @@ per_pair_snr_threshold = per_pair_df$snr_threshold[1]
 tissue_pair_forest_plot = make_tissue_pair_forest_plot(per_pair_df, paste0("SNR threshold = ", per_pair_snr_threshold))
 tissue_pair_forest_plot_output_file = paste0(visualization_dir, "per_tissue_pair_observed_differences_", anno_method, ".pdf")
 ggsave(tissue_pair_forest_plot_output_file, tissue_pair_forest_plot, width=7.2, height=4.2)
+
+
+#########################
+# Observed expression differences stratified by absolute predicted difference threshold
+#########################
+apd_merged_results_file = paste0(expression_differences_results_dir, "observed_differences_stratified_by_abs_pred_diff_thresholds_", anno_method, ".txt")
+apd_merged_df = read.table(apd_merged_results_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+apd_threshold_plot = make_observed_difference_by_threshold_plot(apd_merged_df, "", "abs_pred_diff_threshold", "Absolute predicted difference threshold")
+apd_threshold_plot_output_file = paste0(visualization_dir, "observed_differences_stratified_by_abs_pred_diff_thresholds_", anno_method, ".pdf")
+ggsave(apd_threshold_plot_output_file, apd_threshold_plot + theme(legend.position="top"), width=7.2, height=3.6)
+
+
+#########################
+# Instances passing each absolute predicted difference threshold (from the same merged file)
+#########################
+apd_instance_counts_plot = make_instance_counts_plot(apd_merged_df, "", "abs_pred_diff_threshold", "Absolute predicted difference threshold")
+apd_instance_counts_plot_output_file = paste0(visualization_dir, "instance_counts_stratified_by_abs_pred_diff_thresholds_", anno_method, ".pdf")
+ggsave(apd_instance_counts_plot_output_file, apd_instance_counts_plot, width=7.2, height=3.6)
+
+
+#########################
+# Sign concordance stratified by absolute predicted difference threshold
+#########################
+apd_concordance_file = paste0(expression_differences_results_dir, "sign_concordance_stratified_by_abs_pred_diff_thresholds_", anno_method, ".txt")
+apd_concordance_df = read.table(apd_concordance_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+apd_sign_concordance_plot = make_sign_concordance_plot(apd_concordance_df, "", "abs_pred_diff_threshold", "Absolute predicted difference threshold")
+apd_sign_concordance_plot_output_file = paste0(visualization_dir, "sign_concordance_stratified_by_abs_pred_diff_thresholds_", anno_method, ".pdf")
+ggsave(apd_sign_concordance_plot_output_file, apd_sign_concordance_plot, width=7.2, height=3.6)
+
+
+#########################
+# Observed vs predicted slope stratified by absolute predicted difference threshold
+#########################
+apd_slope_file = paste0(expression_differences_results_dir, "observed_vs_predicted_slope_stratified_by_abs_pred_diff_thresholds_", anno_method, ".txt")
+apd_slope_df = read.table(apd_slope_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+apd_obs_vs_pred_slope_plot = make_obs_vs_pred_slope_plot(apd_slope_df, "", "abs_pred_diff_threshold", "Absolute predicted difference threshold")
+apd_obs_vs_pred_slope_plot_output_file = paste0(visualization_dir, "observed_vs_predicted_slope_stratified_by_abs_pred_diff_thresholds_", anno_method, ".pdf")
+ggsave(apd_obs_vs_pred_slope_plot_output_file, apd_obs_vs_pred_slope_plot, width=7.2, height=3.6)
+
+
+#########################
+# Observed differences, sign concordance, and obs-vs-pred slope in equal-count quantile bins
+# of SNR and (separately) of absolute predicted difference (x-axis is the bin's average value)
+#########################
+for (stratification_name in c("snr", "abs_pred_diff")) {
+	avg_value_colname = paste0("avg_", stratification_name)
+	if (stratification_name == "snr") {
+		x_axis_label = "Average SNR in quantile bin"
+	} else {
+		x_axis_label = "Average absolute predicted difference in quantile bin"
+	}
+
+	bin_obs_diff_file = paste0(expression_differences_results_dir, "observed_differences_in_", stratification_name, "_quantile_bins_", anno_method, ".txt")
+	bin_obs_diff_df = read.table(bin_obs_diff_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+	bin_obs_diff_plot = make_observed_difference_by_threshold_plot(bin_obs_diff_df, "", avg_value_colname, x_axis_label)
+	bin_obs_diff_plot_output_file = paste0(visualization_dir, "observed_differences_in_", stratification_name, "_quantile_bins_", anno_method, ".pdf")
+	ggsave(bin_obs_diff_plot_output_file, bin_obs_diff_plot + theme(legend.position="top"), width=7.2, height=3.6)
+
+	bin_concordance_file = paste0(expression_differences_results_dir, "sign_concordance_in_", stratification_name, "_quantile_bins_", anno_method, ".txt")
+	bin_concordance_df = read.table(bin_concordance_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+	bin_concordance_plot = make_sign_concordance_plot(bin_concordance_df, "", avg_value_colname, x_axis_label)
+	bin_concordance_plot_output_file = paste0(visualization_dir, "sign_concordance_in_", stratification_name, "_quantile_bins_", anno_method, ".pdf")
+	ggsave(bin_concordance_plot_output_file, bin_concordance_plot, width=7.2, height=3.6)
+
+	bin_slope_file = paste0(expression_differences_results_dir, "observed_vs_predicted_slope_in_", stratification_name, "_quantile_bins_", anno_method, ".txt")
+	bin_slope_df = read.table(bin_slope_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+	bin_slope_plot = make_obs_vs_pred_slope_plot(bin_slope_df, "", avg_value_colname, x_axis_label)
+	bin_slope_plot_output_file = paste0(visualization_dir, "observed_vs_predicted_slope_in_", stratification_name, "_quantile_bins_", anno_method, ".pdf")
+	ggsave(bin_slope_plot_output_file, bin_slope_plot, width=7.2, height=3.6)
+}

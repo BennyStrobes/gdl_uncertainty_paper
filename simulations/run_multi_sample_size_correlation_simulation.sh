@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -t 0-26:30                         # Runtime in D-HH:MM format
+#SBATCH -t 0-70:30                         # Runtime in D-HH:MM format
 #SBATCH -p bch-compute                          # Partition to run in
 #SBATCH --mem=40GB  
 
@@ -23,13 +23,44 @@ date
 # Assumes Part 1 and 2 have already been run and files exist
 ####################################################
 
+echo "Simulation "${simulation_iter}
+source ~/.bashrc
+conda activate plink_env
 
+
+date
+
+causal_variant_gene_effect_size_file=${causal_effect_dir}"sim"${simulation_iter}"_sim_causal_variant_gene_effects.txt.gz"
+
+n_anno="6"
+est_borzoi_standardized_effect_size_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}"_est_borzoi_standardized_effects_"${n_anno}"_anno.txt.gz"
+sim_variant_gene_annotation_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}"_sim_variant_gene_annotations_"${n_anno}"_annotations.txt.gz"
+# SLDMC derives the category file name from the annotation file name, so these two must stay paired
+sldmc_variant_gene_annotation_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}"_sim_variant_gene_annotations_"${n_anno}"_annotations_sldmc.txt.gz"
+sldmc_annotation_category_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}"_sim_variant_gene_annotations_"${n_anno}"_annotations_sldmc_categories.txt"
+
+
+simulation_parameter_summary_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}"_sim_variant_gene_annotations_"${n_anno}"_true_sim_effect_summary.txt"
+
+
+
+
+
+
+
+
+
+
+
+
+for eqtl_sample_size in 200 350 450; do
+
+echo "eQTL sample size "${eqtl_sample_size}
 
 ####################################################
 # Part 3: Simulate estimated eqtl effect sizes
 ####################################################
 echo "PART 3"
-eqtl_sample_size="450"
 est_eqtl_effect_size_file=${est_eqtl_effect_size_dir}"sim"${simulation_iter}"_sim_eqtl_ss_"${eqtl_sample_size}"_est_eqtl_effects.txt.gz"
 ind_expr_file=${est_eqtl_effect_size_dir}"sim"${simulation_iter}"_sim_eqtl_ss_"${eqtl_sample_size}"_individual_expression.txt.gz"
 susie_fine_mapping_file=${est_eqtl_effect_size_dir}"sim"${simulation_iter}"_sim_eqtl_ss_"${eqtl_sample_size}"_susie_fine_mapping.txt.gz"
@@ -74,6 +105,8 @@ conda activate plink_env
 echo "PART 6"
 fm_corr_output_stem=${inf_output_dir}"sim"${simulation_iter}"_sim_eqtl_ss_"${eqtl_sample_size}"_"${n_anno}"_anno_fm_corr_results"
 python run_fine_map_corr.py $est_borzoi_standardized_effect_size_file $susie_fine_mapping_file $sim_variant_gene_annotation_file $onek_genomes_plink_filestem $fm_corr_output_stem
+
+done
 
 
 date
