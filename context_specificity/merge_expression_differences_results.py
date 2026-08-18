@@ -35,13 +35,19 @@ def load_in_expression_differences_results(expression_difference_result_files, t
     for result_file, tissue_pair_label in zip(expression_difference_result_files, tissue_pair_labels):
         with gzip.open(result_file, 'rt') as f:
             header = f.readline().strip().split('\t')
+            alt_tau_var_index = header.index('predicted_expr_difference_uncertainty_var_alt_tau')
             for line in f:
                 data = line.strip().split('\t')
                 gene_id = data[0]
                 obs_diff = float(data[8])
                 pred_diff = float(data[9])
                 snr = np.square(pred_diff) / float(data[10])
-                expression_differnce_results.append((gene_id, obs_diff, pred_diff, snr, tissue_pair_label))
+                # Alternative-tau SNR; a non-positive uncertainty variance (every residual
+                # variance truncated to zero) leaves the SNR undefined -> nan (excluded by
+                # every threshold mask)
+                alt_tau_var = float(data[alt_tau_var_index])
+                snr_alt_tau = np.square(pred_diff) / alt_tau_var if alt_tau_var > 0.0 else np.nan
+                expression_differnce_results.append((gene_id, obs_diff, pred_diff, snr, snr_alt_tau, tissue_pair_label))
     return expression_differnce_results
 
 
@@ -51,8 +57,9 @@ def organize_expression_difference_results_into_arrays(expression_differnce_resu
     obs_diffs = np.asarray([res[1] for res in expression_differnce_results])
     pred_diffs = np.asarray([res[2] for res in expression_differnce_results])
     snrs = np.asarray([res[3] for res in expression_differnce_results])
-    instance_tissue_pair_labels = np.asarray([res[4] for res in expression_differnce_results])
-    return gene_ids, obs_diffs, pred_diffs, snrs, instance_tissue_pair_labels
+    snr_alt_taus = np.asarray([res[4] for res in expression_differnce_results])
+    instance_tissue_pair_labels = np.asarray([res[5] for res in expression_differnce_results])
+    return gene_ids, obs_diffs, pred_diffs, snrs, snr_alt_taus, instance_tissue_pair_labels
 
 
 def compute_observed_differences_over_instance_masks(gene_ids, obs_diffs, pred_diffs, instance_masks, n_bootstraps):
@@ -321,11 +328,15 @@ expression_difference_result_files, tissue_pair_labels = extract_expression_diff
 
 # Load in results across all tissue pairs into a single data structure
 expression_differnce_results = load_in_expression_differences_results(expression_difference_result_files, tissue_pair_labels)
-gene_ids, obs_diffs, pred_diffs, snrs, instance_tissue_pair_labels = organize_expression_difference_results_into_arrays(expression_differnce_results)
+gene_ids, obs_diffs, pred_diffs, snrs, snr_alt_taus, instance_tissue_pair_labels = organize_expression_difference_results_into_arrays(expression_differnce_results)
 
 
 # Continuous grid of SNR thresholds (0 through the 99.99th percentile of observed SNRs)
 snr_thresholds = np.linspace(0.0, np.quantile(snrs, 0.9999), 200)
+
+# Continuous grid of alternative-tau SNR thresholds (nan-aware: instances with undefined
+# alternative-tau SNR carry nan and are excluded by every threshold mask)
+snr_alt_tau_thresholds = np.linspace(0.0, np.nanquantile(snr_alt_taus, 0.9999), 200)
 
 # Continuous grid of absolute predicted difference thresholds (0 through the 99.99th percentile)
 abs_pred_diffs = np.abs(pred_diffs)
@@ -347,6 +358,19 @@ for threshold_iter, snr_threshold in enumerate(snr_thresholds):
 t.close()
 print(output_file)
 
+# Same analysis stratified by the alternative-tau SNR
+at_avg_obs_diff_pos, at_avg_obs_diff_pos_se, at_avg_obs_diff_neg, at_avg_obs_diff_neg_se, at_n_pos_instances, at_n_neg_instances = compute_observed_differences_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, snr_alt_taus, snr_alt_tau_thresholds, n_bootstraps)
+
+output_file = expression_differences_results_dir + 'observed_differences_stratified_by_snr_alt_tau_thresholds_' + anno_method + '.txt'
+t = open(output_file, 'w')
+t.write('snr_threshold\tavg_observed_diff_predicted_positives\tavg_observed_diff_predicted_positives_se\tavg_observed_diff_predicted_negatives\tavg_observed_diff_predicted_negatives_se\tn_predicted_positives\tn_predicted_negatives\n')
+for threshold_iter, snr_threshold in enumerate(snr_alt_tau_thresholds):
+    t.write(str(snr_threshold) + '\t' + str(at_avg_obs_diff_pos[threshold_iter]) + '\t' + str(at_avg_obs_diff_pos_se[threshold_iter]))
+    t.write('\t' + str(at_avg_obs_diff_neg[threshold_iter]) + '\t' + str(at_avg_obs_diff_neg_se[threshold_iter]))
+    t.write('\t' + str(int(at_n_pos_instances[threshold_iter])) + '\t' + str(int(at_n_neg_instances[threshold_iter])) + '\n')
+t.close()
+print(output_file)
+
 
 ##################################
 # 2. Sign concordance at each SNR threshold
@@ -361,6 +385,17 @@ for threshold_iter, snr_threshold in enumerate(snr_thresholds):
 t.close()
 print(output_file)
 
+# Same analysis stratified by the alternative-tau SNR
+at_sign_concordances, at_sign_concordance_ses, at_n_concordance_instances = compute_sign_concordance_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, snr_alt_taus, snr_alt_tau_thresholds, n_bootstraps)
+
+output_file = expression_differences_results_dir + 'sign_concordance_stratified_by_snr_alt_tau_thresholds_' + anno_method + '.txt'
+t = open(output_file, 'w')
+t.write('snr_threshold\tsign_concordance\tsign_concordance_se\tn_instances\n')
+for threshold_iter, snr_threshold in enumerate(snr_alt_tau_thresholds):
+    t.write(str(snr_threshold) + '\t' + str(at_sign_concordances[threshold_iter]) + '\t' + str(at_sign_concordance_ses[threshold_iter]) + '\t' + str(int(at_n_concordance_instances[threshold_iter])) + '\n')
+t.close()
+print(output_file)
+
 
 ##################################
 # 3. Regression slope of observed on predicted differences at each SNR threshold
@@ -372,6 +407,17 @@ t = open(output_file, 'w')
 t.write('snr_threshold\tobs_vs_pred_slope\tobs_vs_pred_slope_se\tn_instances\n')
 for threshold_iter, snr_threshold in enumerate(snr_thresholds):
     t.write(str(snr_threshold) + '\t' + str(obs_vs_pred_slopes[threshold_iter]) + '\t' + str(obs_vs_pred_slope_ses[threshold_iter]) + '\t' + str(int(n_slope_instances[threshold_iter])) + '\n')
+t.close()
+print(output_file)
+
+# Same analysis stratified by the alternative-tau SNR
+at_obs_vs_pred_slopes, at_obs_vs_pred_slope_ses, at_n_slope_instances = compute_obs_vs_pred_slope_stratified_by_snr_thresholds(gene_ids, obs_diffs, pred_diffs, snr_alt_taus, snr_alt_tau_thresholds, n_bootstraps)
+
+output_file = expression_differences_results_dir + 'observed_vs_predicted_slope_stratified_by_snr_alt_tau_thresholds_' + anno_method + '.txt'
+t = open(output_file, 'w')
+t.write('snr_threshold\tobs_vs_pred_slope\tobs_vs_pred_slope_se\tn_instances\n')
+for threshold_iter, snr_threshold in enumerate(snr_alt_tau_thresholds):
+    t.write(str(snr_threshold) + '\t' + str(at_obs_vs_pred_slopes[threshold_iter]) + '\t' + str(at_obs_vs_pred_slope_ses[threshold_iter]) + '\t' + str(int(at_n_slope_instances[threshold_iter])) + '\n')
 t.close()
 print(output_file)
 
@@ -399,6 +445,18 @@ output_file = expression_differences_results_dir + 'per_tissue_pair_observed_dif
 t = open(output_file, 'w')
 t.write('tissue_pair\tsnr_threshold\tavg_observed_diff_predicted_positives\tavg_observed_diff_predicted_positives_se\tavg_observed_diff_predicted_negatives\tavg_observed_diff_predicted_negatives_se\tn_predicted_positives\tn_predicted_negatives\n')
 for per_pair_result in per_pair_results:
+    t.write(per_pair_result[0] + '\t' + str(per_tissue_pair_snr_threshold) + '\t' + str(per_pair_result[1]) + '\t' + str(per_pair_result[2]))
+    t.write('\t' + str(per_pair_result[3]) + '\t' + str(per_pair_result[4]) + '\t' + str(int(per_pair_result[5])) + '\t' + str(int(per_pair_result[6])) + '\n')
+t.close()
+print(output_file)
+
+# Same analysis thresholding on the alternative-tau SNR
+at_per_pair_results = compute_per_tissue_pair_observed_differences_at_snr_threshold(gene_ids, obs_diffs, pred_diffs, snr_alt_taus, instance_tissue_pair_labels, tissue_pair_labels, per_tissue_pair_snr_threshold, n_bootstraps)
+
+output_file = expression_differences_results_dir + 'per_tissue_pair_observed_differences_snr_alt_tau_' + anno_method + '.txt'
+t = open(output_file, 'w')
+t.write('tissue_pair\tsnr_threshold\tavg_observed_diff_predicted_positives\tavg_observed_diff_predicted_positives_se\tavg_observed_diff_predicted_negatives\tavg_observed_diff_predicted_negatives_se\tn_predicted_positives\tn_predicted_negatives\n')
+for per_pair_result in at_per_pair_results:
     t.write(per_pair_result[0] + '\t' + str(per_tissue_pair_snr_threshold) + '\t' + str(per_pair_result[1]) + '\t' + str(per_pair_result[2]))
     t.write('\t' + str(per_pair_result[3]) + '\t' + str(per_pair_result[4]) + '\t' + str(int(per_pair_result[5])) + '\t' + str(int(per_pair_result[6])) + '\n')
 t.close()
@@ -455,10 +513,14 @@ print(output_file)
 # of SNR and (separately) of the absolute predicted difference. Unlike the threshold analyses
 # above (nested tails), bins are non-overlapping and each holds ~1/n_bins of the instances.
 ##################################
-for stratification_name, stratification_values in [('snr', snrs), ('abs_pred_diff', abs_pred_diffs)]:
+# Instances with an undefined alternative-tau SNR (nan) cannot be quantile-binned and are dropped
+# from that stratification only
+defined_alt_tau_indices = np.isfinite(snr_alt_taus)
+
+for stratification_name, stratification_values, strat_gene_ids, strat_obs_diffs, strat_pred_diffs in [('snr', snrs, gene_ids, obs_diffs, pred_diffs), ('abs_pred_diff', abs_pred_diffs, gene_ids, obs_diffs, pred_diffs), ('snr_alt_tau', snr_alt_taus[defined_alt_tau_indices], gene_ids[defined_alt_tau_indices], obs_diffs[defined_alt_tau_indices], pred_diffs[defined_alt_tau_indices])]:
     bin_assignments, bin_avg_values = assign_quantile_bins(stratification_values, n_stratification_quantile_bins)
 
-    bin_avg_obs_diff_pos, bin_avg_obs_diff_pos_se, bin_avg_obs_diff_neg, bin_avg_obs_diff_neg_se, bin_n_pos_instances, bin_n_neg_instances = compute_over_quantile_bins_in_chunks(compute_observed_differences_over_instance_masks, gene_ids, obs_diffs, pred_diffs, bin_assignments, n_stratification_quantile_bins, n_bootstraps)
+    bin_avg_obs_diff_pos, bin_avg_obs_diff_pos_se, bin_avg_obs_diff_neg, bin_avg_obs_diff_neg_se, bin_n_pos_instances, bin_n_neg_instances = compute_over_quantile_bins_in_chunks(compute_observed_differences_over_instance_masks, strat_gene_ids, strat_obs_diffs, strat_pred_diffs, bin_assignments, n_stratification_quantile_bins, n_bootstraps)
     output_file = expression_differences_results_dir + 'observed_differences_in_' + stratification_name + '_quantile_bins_' + anno_method + '.txt'
     t = open(output_file, 'w')
     t.write('bin_index\tavg_' + stratification_name + '\tavg_observed_diff_predicted_positives\tavg_observed_diff_predicted_positives_se\tavg_observed_diff_predicted_negatives\tavg_observed_diff_predicted_negatives_se\tn_predicted_positives\tn_predicted_negatives\n')
@@ -469,7 +531,7 @@ for stratification_name, stratification_values in [('snr', snrs), ('abs_pred_dif
     t.close()
     print(output_file)
 
-    bin_sign_concordances, bin_sign_concordance_ses, bin_n_concordance_instances = compute_over_quantile_bins_in_chunks(compute_sign_concordance_over_instance_masks, gene_ids, obs_diffs, pred_diffs, bin_assignments, n_stratification_quantile_bins, n_bootstraps)
+    bin_sign_concordances, bin_sign_concordance_ses, bin_n_concordance_instances = compute_over_quantile_bins_in_chunks(compute_sign_concordance_over_instance_masks, strat_gene_ids, strat_obs_diffs, strat_pred_diffs, bin_assignments, n_stratification_quantile_bins, n_bootstraps)
     output_file = expression_differences_results_dir + 'sign_concordance_in_' + stratification_name + '_quantile_bins_' + anno_method + '.txt'
     t = open(output_file, 'w')
     t.write('bin_index\tavg_' + stratification_name + '\tsign_concordance\tsign_concordance_se\tn_instances\n')
@@ -478,7 +540,7 @@ for stratification_name, stratification_values in [('snr', snrs), ('abs_pred_dif
     t.close()
     print(output_file)
 
-    bin_obs_vs_pred_slopes, bin_obs_vs_pred_slope_ses, bin_n_slope_instances = compute_over_quantile_bins_in_chunks(compute_obs_vs_pred_slope_over_instance_masks, gene_ids, obs_diffs, pred_diffs, bin_assignments, n_stratification_quantile_bins, n_bootstraps)
+    bin_obs_vs_pred_slopes, bin_obs_vs_pred_slope_ses, bin_n_slope_instances = compute_over_quantile_bins_in_chunks(compute_obs_vs_pred_slope_over_instance_masks, strat_gene_ids, strat_obs_diffs, strat_pred_diffs, bin_assignments, n_stratification_quantile_bins, n_bootstraps)
     output_file = expression_differences_results_dir + 'observed_vs_predicted_slope_in_' + stratification_name + '_quantile_bins_' + anno_method + '.txt'
     t = open(output_file, 'w')
     t.write('bin_index\tavg_' + stratification_name + '\tobs_vs_pred_slope\tobs_vs_pred_slope_se\tn_instances\n')

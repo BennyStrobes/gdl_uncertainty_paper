@@ -213,7 +213,6 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
     """
     For a given tissue, get the observed and predicted expression for all gene-individual pairs.
     """
-
     # Extract per-category calibration slopes and effect-prediction uncertainty (standardized-effect units)
     category_name_to_sldmc_stats = extract_sldmc_calibration_and_uncertainty(sldmc_results_file, anno_method)
 
@@ -240,6 +239,16 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
     # Initialize output objects
     gene_individual_to_results = {}
     ordered_sample_names = None
+
+    # Accumulators for the alternative-tau uncertainty model: residual effect variance is constant
+    # on the per-allele scale within a category, so a variant's standardized-scale residual variance
+    # is geno_sdev^2 * residual_variance_c / (category mean heterozygosity). The category mean
+    # heterozygosity needs all chromosomes, so per-gene category-level partial sums are stored here
+    # and the division happens after the chromosome loop.
+    n_categories = len(ordered_category_names)
+    category_het_sums = np.zeros(n_categories)
+    category_het_counts = np.zeros(n_categories)
+    gene_id_to_alt_tau_uncertainty_partials = {}
 
     # Loop through chromsomes
     for chrom_num in range(1, 23):
@@ -352,10 +361,12 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
             ##################################
             calibration_slope_vec = []
             residual_variance_vec = []
+            category_index_vec = []
             for cis_variant in ordered_cis_variants:
                 if cis_variant not in var_to_anno:
                     calibration_slope_vec.append(np.nan)
                     residual_variance_vec.append(np.nan)
+                    category_index_vec.append(-1)
                     continue
                 if var_to_anno[cis_variant][4] != var_to_borzoi_effects[cis_variant][4]:
                     print('annotation alllele assumption erororo')
@@ -365,13 +376,16 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
                     # Variant-gene pair falls in no category of the annotation -> no calibration info
                     calibration_slope_vec.append(np.nan)
                     residual_variance_vec.append(np.nan)
+                    category_index_vec.append(-1)
                     continue
                 category_name = ordered_category_names[category_index]
                 sldmc_stats = category_name_to_sldmc_stats[category_name]
                 calibration_slope_vec.append(sldmc_stats['calibration_slope'])
                 residual_variance_vec.append(sldmc_stats['residual_variance'])
+                category_index_vec.append(category_index)
             calibration_slope_vec = np.asarray(calibration_slope_vec)
             residual_variance_vec = np.asarray(residual_variance_vec)
+            category_index_vec = np.asarray(category_index_vec)
 
             ##################################
             # Per-individual observed expression, predicted expression, and prediction uncertainty
@@ -389,6 +403,19 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
             # (assumes independent effect residuals across variants: sum_v std_geno_iv^2 * residual_variance_v)
             predicted_expr_uncertainty_var_vec = np.dot(np.transpose(np.square(std_geno_mat[valid_variant_indices, :])), residual_variance_vec[valid_variant_indices])
 
+            # Alternative-tau uncertainty: a variant's residual variance scales with its
+            # heterozygosity (geno_sdevs^2 estimates 2p(1-p)) relative to the category mean.
+            # residual_variance is truncated at zero (a negative category estimate is a
+            # finite-sample artifact). Only the per-category partial sums are computable now;
+            # dividing by the category mean heterozygosity happens after the chromosome loop.
+            valid_category_indices = category_index_vec[valid_variant_indices]
+            valid_het_vec = np.square(geno_sdevs[valid_variant_indices])
+            category_one_hot = 1.0*(valid_category_indices[:, None] == np.arange(n_categories)[None, :])
+            category_het_sums = category_het_sums + np.dot(np.transpose(category_one_hot), valid_het_vec)
+            category_het_counts = category_het_counts + np.sum(category_one_hot, axis=0)
+            truncated_residual_variance_vec = np.maximum(residual_variance_vec[valid_variant_indices], 0.0)
+            gene_id_to_alt_tau_uncertainty_partials[short_gene_id] = np.dot(np.transpose(category_one_hot), np.square(std_geno_mat[valid_variant_indices, :])*(valid_het_vec*truncated_residual_variance_vec)[:, None])
+
             # Add to results (one entry per gene-individual pair)
             n_predictive_variants = np.sum(valid_variant_indices)
             for sample_index, sample_name in enumerate(ordered_sample_names):
@@ -403,6 +430,26 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
                 gene_individual_to_results[gene_individual_key]['n_predictive_variants'] = n_predictive_variants
 
         f.close()
+
+    ##################################
+    # Finalize alternative-tau uncertainty: divide each category's partial sums by the category's
+    # mean heterozygosity (mass-preserving: the category-average per-variant residual variance
+    # matches the flat model)
+    ##################################
+    category_mean_het = np.full(n_categories, np.nan)
+    observed_categories = category_het_counts > 0.0
+    category_mean_het[observed_categories] = category_het_sums[observed_categories]/category_het_counts[observed_categories]
+    for category_iter, category_name in enumerate(ordered_category_names):
+        print('mean heterozygosity of ' + category_name + ': ' + str(category_mean_het[category_iter]) + ' (' + str(int(category_het_counts[category_iter])) + ' variant-gene pairs)', flush=True)
+
+    # Unobserved categories contribute nothing to any gene's partial sums
+    inverse_category_mean_het = np.zeros(n_categories)
+    inverse_category_mean_het[observed_categories] = 1.0/category_mean_het[observed_categories]
+
+    for short_gene_id in gene_id_to_alt_tau_uncertainty_partials:
+        alt_tau_uncertainty_var_vec = np.dot(inverse_category_mean_het, gene_id_to_alt_tau_uncertainty_partials[short_gene_id])
+        for sample_index, sample_name in enumerate(ordered_sample_names):
+            gene_individual_to_results[short_gene_id + ':' + sample_name]['predicted_expr_uncertainty_var_alt_tau'] = alt_tau_uncertainty_var_vec[sample_index]
 
     return gene_individual_to_results
 
@@ -453,7 +500,8 @@ t = gzip.open(expr_differences_output_file, 'wt')
 t.write('gene_id\tindividual_id')
 t.write('\tobserved_expr1\tpredicted_expr1\tpredicted_expr_uncertainty_var1')
 t.write('\tobserved_expr2\tpredicted_expr2\tpredicted_expr_uncertainty_var2')
-t.write('\tobserved_expr_difference\tpredicted_expr_difference\tpredicted_expr_difference_uncertainty_var\n')
+t.write('\tobserved_expr_difference\tpredicted_expr_difference\tpredicted_expr_difference_uncertainty_var')
+t.write('\tpredicted_expr_uncertainty_var_alt_tau1\tpredicted_expr_uncertainty_var_alt_tau2\tpredicted_expr_difference_uncertainty_var_alt_tau\n')
 
 n_shared_pairs = 0
 for gene_individual_key in [*gene_individual_to_results1]:
@@ -466,12 +514,14 @@ for gene_individual_key in [*gene_individual_to_results1]:
     predicted_expr_difference = results1['predicted_expr'] - results2['predicted_expr']
     # Assumes independent prediction errors across the two tissues
     predicted_expr_difference_uncertainty_var = results1['predicted_expr_uncertainty_var'] + results2['predicted_expr_uncertainty_var']
+    predicted_expr_difference_uncertainty_var_alt_tau = results1['predicted_expr_uncertainty_var_alt_tau'] + results2['predicted_expr_uncertainty_var_alt_tau']
 
     gene_id, individual_id = gene_individual_key.split(':')
     t.write(gene_id + '\t' + individual_id)
     t.write('\t' + str(results1['observed_expr']) + '\t' + str(results1['predicted_expr']) + '\t' + str(results1['predicted_expr_uncertainty_var']))
     t.write('\t' + str(results2['observed_expr']) + '\t' + str(results2['predicted_expr']) + '\t' + str(results2['predicted_expr_uncertainty_var']))
-    t.write('\t' + str(observed_expr_difference) + '\t' + str(predicted_expr_difference) + '\t' + str(predicted_expr_difference_uncertainty_var) + '\n')
+    t.write('\t' + str(observed_expr_difference) + '\t' + str(predicted_expr_difference) + '\t' + str(predicted_expr_difference_uncertainty_var))
+    t.write('\t' + str(results1['predicted_expr_uncertainty_var_alt_tau']) + '\t' + str(results2['predicted_expr_uncertainty_var_alt_tau']) + '\t' + str(predicted_expr_difference_uncertainty_var_alt_tau) + '\n')
     n_shared_pairs = n_shared_pairs + 1
 
 t.close()
