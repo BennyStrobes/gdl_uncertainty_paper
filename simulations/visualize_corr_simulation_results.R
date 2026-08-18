@@ -8,9 +8,12 @@ options(warn=1)
 # two methods do not share a schema: SLDMC reports (annotation_name, category_name) with the
 # simulated annotations living in category_name, while the fine-mapped-SNP analysis reports a single
 # annotation_name that already matches the annoN names used by the true simulated summaries.
+# The directory also holds results from the multi-eQTL-sample-size runs (ss 200/350/450) under the
+# same naming scheme, so the patterns pin the sample size to keep those out of these figures.
+eqtl_sample_size <- "489"
 methods_list <- list(
-	list(key="sldmc", label="SLDMC", pattern="_ld_corr_results_bootstrap_stats\\.txt$"),
-	list(key="fine_mapped", label="Fine-mapped SNPs", pattern="_fm_corr_results_bootstrap_stats\\.txt$")
+	list(key="sldmc", label="SLDMC", pattern=paste0("_sim_eqtl_ss_", eqtl_sample_size, "_.*_ld_corr_results_bootstrap_stats\\.txt$")),
+	list(key="fine_mapped", label="Fine-mapped SNPs", pattern=paste0("_sim_eqtl_ss_", eqtl_sample_size, "_.*_fm_corr_results_bootstrap_stats\\.txt$"))
 )
 sldmc_annotation_name <- "sim_signal_prop"
 
@@ -504,7 +507,6 @@ if (!dir.exists(viz_dir)) {
 # The standard error calibration intervals are bootstrapped, so fix the seed to keep figures stable
 # across reruns on the same results.
 set.seed(1)
-
 
 #################
 # Load in true simulated values

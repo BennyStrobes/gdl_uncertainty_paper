@@ -74,7 +74,6 @@ fi
 
 
 
-
 if false; then
 source ~/.bashrc
 conda activate plink_env

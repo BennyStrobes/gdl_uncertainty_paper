@@ -909,7 +909,7 @@ ld_moments_output_dir = args[8]
 
 
 ######################
-# Simulations Visualization
+#  Main Simulations Visualization
 ######################
 
 # Load in simulation data
@@ -932,6 +932,56 @@ simulation_calibration_plot = make_simulation_estimate_bar_plot(simulation_calib
 joint_simulation <- plot_grid(simulation_calibration_plot, simulation_correlation_plot, ncol=2, labels=c("a", "b"))
 #simulation_output_file = paste0(visualization_dir, "simulation_joint_stimates.pdf")
 #ggsave(simulation_output_file, joint_simulation, width=7.2, height=2.5)
+
+
+######################
+# eQTL sample size variation simulation visualization
+######################
+
+# Load in simulation data
+sim_corr_oracle_df = load_in_oracle_result(simulation_oracle_results_dir, 3, n_sims=50, n_anno="6")
+sim_calibration_oracle_df = load_in_oracle_result(simulation_oracle_results_dir, 4, n_sims=50, n_anno="6")
+
+simulation_correlation_200_summary_df = load_simulation_summary(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="200", n_anno="6")
+simulation_calibration_200_summary_df = load_simulation_summary(simulation_results_dir, metric="calibration_slope", n_sims=50, eqtl_ss="200", n_anno="6")
+
+simulation_correlation_350_summary_df = load_simulation_summary(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="350", n_anno="6")
+simulation_calibration_350_summary_df = load_simulation_summary(simulation_results_dir, metric="calibration_slope", n_sims=50, eqtl_ss="350", n_anno="6")
+
+simulation_correlation_450_summary_df = load_simulation_summary(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="450", n_anno="6")
+simulation_calibration_450_summary_df = load_simulation_summary(simulation_results_dir, metric="calibration_slope", n_sims=50, eqtl_ss="450", n_anno="6")
+
+
+# 200
+simulation_correlation_200_plot = make_simulation_estimate_bar_plot(simulation_correlation_200_summary_df, sim_corr_oracle_df, "Correlation of causal\nand predicted eQTL effects", "#3F88C5")
+simulation_calibration_200_plot = make_simulation_estimate_bar_plot(simulation_calibration_200_summary_df, sim_calibration_oracle_df, "Calibration of causal\non predicted eQTL effects", "#B85C38", y_accuracy=.1)
+# 350
+simulation_correlation_350_plot = make_simulation_estimate_bar_plot(simulation_correlation_350_summary_df, sim_corr_oracle_df, "Correlation of causal\nand predicted eQTL effects", "#3F88C5")
+simulation_calibration_350_plot = make_simulation_estimate_bar_plot(simulation_calibration_350_summary_df, sim_calibration_oracle_df, "Calibration of causal\non predicted eQTL effects", "#B85C38", y_accuracy=.1)
+# 450
+simulation_correlation_450_plot = make_simulation_estimate_bar_plot(simulation_correlation_450_summary_df, sim_corr_oracle_df, "Correlation of causal\nand predicted eQTL effects", "#3F88C5")
+simulation_calibration_450_plot = make_simulation_estimate_bar_plot(simulation_calibration_450_summary_df, sim_calibration_oracle_df, "Calibration of causal\non predicted eQTL effects", "#B85C38", y_accuracy=.1)
+
+
+# Joint version: each sample-size row gets a centered title strip above its two panels
+make_sample_size_row <- function(calibration_plot, correlation_plot, eqtl_ss, panel_labels) {
+	row_title = ggdraw() + draw_label(paste0("Simulated eQTL sample size: ", eqtl_ss), fontface="bold", size=11)
+	row_plots = plot_grid(calibration_plot, correlation_plot, ncol=2, labels=panel_labels)
+	return(plot_grid(row_title, row_plots, ncol=1, rel_heights=c(.09, 1)))
+}
+joint_cross_sample_size_simulation <- plot_grid(
+	make_sample_size_row(simulation_calibration_200_plot, simulation_correlation_200_plot, "200", c("a", "b")),
+	make_sample_size_row(simulation_calibration_350_plot, simulation_correlation_350_plot, "350", c("c", "d")),
+	make_sample_size_row(simulation_calibration_450_plot, simulation_correlation_450_plot, "450", c("e", "f")),
+	ncol=1
+)
+simulation_output_file = paste0(visualization_dir, "simulation_bias_cross_simulated_ss.pdf")
+ggsave(simulation_output_file, joint_cross_sample_size_simulation, width=7.2, height=6.5)
+
+
+
+
+
 
 
 ######################
