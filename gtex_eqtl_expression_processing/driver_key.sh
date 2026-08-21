@@ -101,7 +101,7 @@ fi
 ############################
 if false; then
 tail -n +2 "$borzoi_gtex_independent_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_identifier target_description gtex_tissue; do
-	residual_expression_file=${residualized_expression_dir}${gtex_tissue}".v10.residualized_expression_renormalized.bed"
+	residual_expression_file=${residualized_expression_dir}${gtex_tissue}".v8.residualized_expression_renormalized.bed"
 	genotype_mapping_file=$plink_genotype_data_dir"genotype_sample_mapping_to_"${gtex_tissue}"_expression_samples.txt"
 
 	eqtl_results_output_file=$eQTL_results_dir"eqtl_results_"${gtex_tissue}"_sumstats.txt.gz"
