@@ -94,17 +94,36 @@ def load_single_tissue_summary(summary_file):
 	return cell_to_observed, cell_to_bootstrap, ordered_cells
 
 
-def meta_analyze_cells(per_tissue_observed, per_tissue_bootstrap, ordered_cells):
+def recompute_correlation_from_components(estimates):
+	# Recompute the correlation entry from the meta-analyzed components rather than keeping the
+	# average of the per-tissue correlations (matches meta_analyze_sldmc_results.py's
+	# recompute_from_components method)
+	calibration_slope = estimates[0]
+	per_snp_eqtl_h2 = estimates[1]
+	borzoi_variance = estimates[2]
+	sqrt_term = borzoi_variance/per_snp_eqtl_h2
+	if np.isfinite(sqrt_term) and sqrt_term >= 0.0:
+		estimates[4] = calibration_slope*np.sqrt(sqrt_term)
+	else:
+		estimates[4] = np.nan
+	return estimates
+
+
+def meta_analyze_cells(per_tissue_observed, per_tissue_bootstrap, ordered_cells, correlation_meta_method):
 	# Average each cell's estimates across tissues, separately for the observed estimate and for
 	# each (shared) bootstrap iteration. Bootstrap iteration <b> uses the same resampled gene set in
 	# every tissue, so tissues can be averaged within an iteration to preserve the pairing needed for
 	# a valid difference. Cells missing in a tissue are simply averaged over the tissues that have them.
+	# With correlation_meta_method 'recompute_from_components', the correlation entry of every
+	# meta-analyzed vector is recomputed from its meta-analyzed components.
 	meta_observed = {}
 	meta_bootstrap = {}
 	for cell in ordered_cells:
 		observed_estimates = [per_tissue[cell] for per_tissue in per_tissue_observed if cell in per_tissue]
 		if len(observed_estimates) > 0:
 			meta_observed[cell] = np.nanmean(np.asarray(observed_estimates), axis=0)
+			if correlation_meta_method == 'recompute_from_components':
+				meta_observed[cell] = recompute_correlation_from_components(meta_observed[cell])
 
 		meta_bootstrap[cell] = {}
 		bootstrap_iters = {}
@@ -115,6 +134,8 @@ def meta_analyze_cells(per_tissue_observed, per_tissue_bootstrap, ordered_cells)
 		for sample_iter in bootstrap_iters:
 			iter_estimates = [per_tissue[cell][sample_iter] for per_tissue in per_tissue_bootstrap if cell in per_tissue and sample_iter in per_tissue[cell]]
 			meta_bootstrap[cell][sample_iter] = np.nanmean(np.asarray(iter_estimates), axis=0)
+			if correlation_meta_method == 'recompute_from_components':
+				meta_bootstrap[cell][sample_iter] = recompute_correlation_from_components(meta_bootstrap[cell][sample_iter])
 
 	return meta_observed, meta_bootstrap
 
@@ -186,11 +207,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--ld-corr-output-file-list', dest='ld_corr_output_file_list', default='None', type=str, help='File containing one per-tissue ld-corr *_bootstrap_summary.txt file per line')
 parser.add_argument('--meta-analyzed-output-stem', dest='meta_analyzed_output_stem', default='None', type=str, help='Output file stem for the cross-tissue meta-analyzed intercept-difference results')
 parser.add_argument('--annotation-version', dest='annotation_version', default='default', type=str, choices=['default', 'magnitude_stratified'], help='Which annotation version these results are from. Determines the intercept each cell is differenced against: a single global intercept (default), or the per-magnitude-bin intercept (magnitude_stratified).')
+parser.add_argument('--correlation-meta-method', dest='correlation_meta_method', default='average_correlation', type=str, choices=['average_correlation', 'recompute_from_components'], help='How to meta-analyze the correlation before differencing: average the per-tissue correlations, or recompute it from the meta-analyzed components (should match the method used in meta_analyze_sldmc_results.py)')
 args = parser.parse_args()
 
 ld_corr_output_file_list = args.ld_corr_output_file_list
 meta_analyzed_output_stem = args.meta_analyzed_output_stem
 annotation_version = args.annotation_version
+correlation_meta_method = args.correlation_meta_method
 
 
 ##############################
@@ -221,6 +244,6 @@ for ld_corr_output_file in ld_corr_output_files:
 ##############################
 # Meta-analyze across tissues, then write the cross-tissue intercept-difference stats file
 ##############################
-meta_observed, meta_bootstrap = meta_analyze_cells(per_tissue_observed, per_tissue_bootstrap, ordered_cells)
+meta_observed, meta_bootstrap = meta_analyze_cells(per_tissue_observed, per_tissue_bootstrap, ordered_cells, correlation_meta_method)
 meta_difference_rows = compute_intercept_difference_stats(meta_observed, meta_bootstrap, ordered_cells, annotation_version)
 write_difference_stats(meta_analyzed_output_stem + '_intercept_diff_stats.txt', meta_difference_rows)

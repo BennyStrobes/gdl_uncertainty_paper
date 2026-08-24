@@ -18,6 +18,7 @@ date
 python compute_intercept_differences.py \
 	--ld-corr-output-file-list $ld_corr_output_file_list \
 	--meta-analyzed-output-stem $meta_analyzed_output_stem \
-	--annotation-version $annotation_version
+	--annotation-version $annotation_version \
+	--correlation-meta-method "recompute_from_components"
 
 date

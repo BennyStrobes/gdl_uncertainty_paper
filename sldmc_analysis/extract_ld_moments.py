@@ -289,7 +289,7 @@ def extract_gene_chrom_num(var_id_to_est_borzoi_effects):
 	chrom_num = var_id_to_est_borzoi_effects[var_id][2]
 	return chrom_num
 
-def extract_and_write_ld_moments(gene_id_to_est_borzoi_effects, gene_id_to_est_eqtl_effects, gene_id_to_variant_gene_anno, genotype_plink_filestem, anno_names, anno_name_to_n_categories, anno_name_to_category_names, genotype_sample_indices, output_file, target_anno_names=None):
+def extract_and_write_ld_moments(gene_id_to_est_borzoi_effects, gene_id_to_est_eqtl_effects, gene_id_to_variant_gene_anno, genotype_plink_filestem, anno_names, anno_name_to_n_categories, anno_name_to_category_names, genotype_sample_indices, output_file, missing_genotype_handling, target_anno_names=None):
 	# Stream one line per variant-gene pair with an observed eQTL effect, holding the standardized
 	# eQTL effect size alongside, for every annotation category, the LD-mean of the standardized
 	# borzoi effects (i.e. the calibration regression's design matrix in sldmc.py, before it gets
@@ -385,9 +385,18 @@ def extract_and_write_ld_moments(gene_id_to_est_borzoi_effects, gene_id_to_est_e
 			cis_genotype_indices = np.asarray(cis_genotype_indices)
 			# Extract genotype matrix
 			geno_mat = (G[cis_genotype_indices,:].compute())[:, genotype_sample_indices]
-			row_means = np.nanmean(geno_mat, axis=1)
-			nan_rows, nan_cols = np.where(np.isnan(geno_mat))
-			geno_mat[nan_rows, nan_cols] = row_means[nan_rows]
+			if missing_genotype_handling == 'mean_impute':
+				# Fill each missing genotype call with that variant's mean across observed samples
+				row_means = np.nanmean(geno_mat, axis=1)
+				nan_rows, nan_cols = np.where(np.isnan(geno_mat))
+				geno_mat[nan_rows, nan_cols] = row_means[nan_rows]
+			else:
+				# drop_missing: discard any variant with a missing genotype call. Mark it missing
+				# on both ends (like the degenerate case below) so the subsetting removes its
+				# row and column from LD.
+				unobserved_geno_indices = np.any(np.isnan(geno_mat), axis=1)
+				eqtl_effects[unobserved_geno_indices] = np.nan
+				borzoi_effects[unobserved_geno_indices] = np.nan
 
 			# A variant with no genotype variance in this sample gets an all-nan row AND column in
 			# the correlation matrix. The row is harmless (it drops out per-variant below), but a
@@ -479,6 +488,7 @@ parser.add_argument('--variant-gene-annotation-file', dest='variant_gene_annotat
 parser.add_argument('--genotype-plink-filestem', dest='genotype_plink_filestem', required=True, help='Genotype plink filestem (per-chromosome number appended).')
 parser.add_argument('--genotype-sample-mapping-file', dest='genotype_sample_mapping_file', required=True, help='Genotype sample indices for in-sample LD.')
 parser.add_argument('--ld-moment-output-stem', dest='ld_moment_output_stem', required=True, help='Output filestem.')
+parser.add_argument('--missing-genotype-handling', dest='missing_genotype_handling', choices=['drop_missing', 'mean_impute'], default='drop_missing', required=False, help="How to handle missing genotype calls: 'drop_missing' discards any variant with a missing genotype call (default); 'mean_impute' fills missing calls with the variant's mean genotype.")
 args = parser.parse_args()
 
 est_borzoi_effect_size_file = args.est_borzoi_effect_size_file
@@ -487,6 +497,7 @@ variant_gene_annotation_file = args.variant_gene_annotation_file
 genotype_plink_filestem = args.genotype_plink_filestem
 genotype_sample_mapping_file = args.genotype_sample_mapping_file
 ld_moment_output_stem = args.ld_moment_output_stem
+missing_genotype_handling = args.missing_genotype_handling
 
 
 # Companion file describing the (annotation, category) pairs in the annotation file
@@ -521,7 +532,7 @@ genotype_sample_indices = (np.loadtxt(genotype_sample_mapping_file)).astype(int)
 # Only the intercept and the (coarse) borzoi magnitude bin annotations get LD-mean columns
 target_anno_names = ['intercept', 'borzoi_magnitude_bins']
 ld_moment_output_file = ld_moment_output_stem + '_ld_moments.txt.gz'
-extract_and_write_ld_moments(gene_id_to_est_borzoi_effects, gene_id_to_est_eqtl_effects, gene_id_to_variant_gene_anno, genotype_plink_filestem, anno_names, anno_name_to_n_categories, anno_name_to_category_names, genotype_sample_indices, ld_moment_output_file, target_anno_names=target_anno_names)
+extract_and_write_ld_moments(gene_id_to_est_borzoi_effects, gene_id_to_est_eqtl_effects, gene_id_to_variant_gene_anno, genotype_plink_filestem, anno_names, anno_name_to_n_categories, anno_name_to_category_names, genotype_sample_indices, ld_moment_output_file, missing_genotype_handling, target_anno_names=target_anno_names)
 
 
 ##############################
