@@ -209,7 +209,7 @@ def extract_sldmc_calibration_and_uncertainty(sldmc_results_file, anno_method):
     return mapping
 
 
-def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tissue(genotype_stem, sldmc_results_file, anno_method, borzoi_effect_file, borzoi_annotation_file, genotype_sample_mapping_file, expr_file):
+def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tissue(genotype_stem, sldmc_results_file, anno_method, borzoi_effect_file, borzoi_annotation_file, genotype_sample_mapping_file, expr_file, missing_genotype_handling):
     """
     For a given tissue, get the observed and predicted expression for all gene-individual pairs.
     """
@@ -249,6 +249,10 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
     category_het_sums = np.zeros(n_categories)
     category_het_counts = np.zeros(n_categories)
     gene_id_to_alt_tau_uncertainty_partials = {}
+
+    # Counts of cis variant-gene pairs seen, and of those discarded for a missing genotype call
+    n_variant_gene_pairs = 0
+    n_variant_gene_pairs_dropped_for_missingness = 0
 
     # Loop through chromsomes
     for chrom_num in range(1, 23):
@@ -323,10 +327,20 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
             cis_genotype_indices = np.asarray(cis_genotype_indices)
             geno_mat = (G[cis_genotype_indices, :].compute())[:, genotype_sample_indices]
 
-            # Mean impute missing genotypes
-            row_means = np.nanmean(geno_mat, axis=1)
-            nan_rows, nan_cols = np.where(np.isnan(geno_mat))
-            geno_mat[nan_rows, nan_cols] = row_means[nan_rows]
+            if missing_genotype_handling == 'mean_impute':
+                # Fill each missing genotype call with that variant's mean across observed samples
+                row_means = np.nanmean(geno_mat, axis=1)
+                nan_rows, nan_cols = np.where(np.isnan(geno_mat))
+                geno_mat[nan_rows, nan_cols] = row_means[nan_rows]
+                unobserved_geno_indices = np.zeros(geno_mat.shape[0], dtype=bool)
+            else:
+                # drop_missing: discard any variant with a missing genotype call, matching the variant
+                # universe the eQTL sumstats and sldmc calibration stats were computed on. Folded into
+                # the degenerate set below so the variant drops out of the prediction, both uncertainty
+                # models, and the category heterozygosity sums.
+                unobserved_geno_indices = np.any(np.isnan(geno_mat), axis=1)
+            n_variant_gene_pairs = n_variant_gene_pairs + geno_mat.shape[0]
+            n_variant_gene_pairs_dropped_for_missingness = n_variant_gene_pairs_dropped_for_missingness + np.sum(unobserved_geno_indices)
 
             # Convert to dosage of the borzoi effect allele
             geno_mat = 2.0 - geno_mat
@@ -340,8 +354,9 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
             ##################################
             # Genotype standard deviation of each variant
             geno_sdevs = np.std(geno_mat, axis=1)
-            # Variants with no genotype variance in this sample cannot be standardized
-            degenerate_indices = (geno_sdevs > 0.0) == False
+            # Variants with no genotype variance in this sample cannot be standardized. Variants
+            # discarded for a missing call (drop_missing) are treated the same way.
+            degenerate_indices = ((geno_sdevs > 0.0) == False) | unobserved_geno_indices
 
             # Standardized genotype (mean zero, unit variance per variant)
             std_geno_mat = geno_mat - np.mean(geno_mat, axis=1)[:, None]
@@ -431,6 +446,8 @@ def get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tis
 
         f.close()
 
+    print(str(n_variant_gene_pairs_dropped_for_missingness) + ' of ' + str(n_variant_gene_pairs) + ' cis variant-gene pairs discarded for a missing genotype call (missing_genotype_handling=' + missing_genotype_handling + ')', flush=True)
+
     ##################################
     # Finalize alternative-tau uncertainty: divide each category's partial sums by the category's
     # mean heterozygosity (mass-preserving: the category-average per-variant residual variance
@@ -467,6 +484,7 @@ parser.add_argument('--borzoi-effect-file2', dest='borzoi_effect_file2', require
 parser.add_argument('--borzoi-annotation-file2', dest='borzoi_annotation_file2', required=True, help='Borzoi variant-gene annotation file for tissue 2.')
 parser.add_argument('--genotype-sample-mapping-file2', dest='genotype_sample_mapping_file2', required=True, help='File mapping genotype samples to expression samples for tissue 2.')
 parser.add_argument('--expr-file2', dest='expr_file2', required=True, help='Residualized expression file for tissue 2.')
+parser.add_argument('--missing-genotype-handling', dest='missing_genotype_handling', choices=['drop_missing', 'mean_impute'], default='drop_missing', required=False, help="How to handle missing genotype calls: 'drop_missing' discards any variant with a missing genotype call (default; matches the eQTL sumstats and sldmc runs); 'mean_impute' fills missing calls with the variant's mean genotype.")
 args = parser.parse_args()
 
 genotype_stem = args.genotype_stem
@@ -481,6 +499,7 @@ borzoi_effect_file2 = args.borzoi_effect_file2
 borzoi_annotation_file2 = args.borzoi_annotation_file2
 genotype_sample_mapping_file2 = args.genotype_sample_mapping_file2
 expr_file2 = args.expr_file2
+missing_genotype_handling = args.missing_genotype_handling
 
 
 
@@ -488,9 +507,9 @@ expr_file2 = args.expr_file2
 ##################################
 # Observed and predicted expression for all gene-individual pairs, in each tissue
 ##################################
-gene_individual_to_results1 = get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tissue(genotype_stem, sldmc_results_file, anno_method, borzoi_effect_file1, borzoi_annotation_file1, genotype_sample_mapping_file1, expr_file1)
+gene_individual_to_results1 = get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tissue(genotype_stem, sldmc_results_file, anno_method, borzoi_effect_file1, borzoi_annotation_file1, genotype_sample_mapping_file1, expr_file1, missing_genotype_handling)
 
-gene_individual_to_results2 = get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tissue(genotype_stem, sldmc_results_file, anno_method, borzoi_effect_file2, borzoi_annotation_file2, genotype_sample_mapping_file2, expr_file2)
+gene_individual_to_results2 = get_observed_and_predicted_expression_for_all_gene_individual_pairs_in_a_tissue(genotype_stem, sldmc_results_file, anno_method, borzoi_effect_file2, borzoi_annotation_file2, genotype_sample_mapping_file2, expr_file2, missing_genotype_handling)
 
 
 ##################################

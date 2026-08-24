@@ -3,16 +3,16 @@
 ####################
 
 # Directory of expression data
-gtex_expr_dir="/lab-share/CHIP-Strober-e2/Public/ben/s2e_uncertainty/gtex_eqtl_expression_processing/residualized_expression/"
+gtex_expr_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/gtex_eqtl_expression_processing/residualized_expression/"
 
 # Directory containing genotype data
-processed_genotype_data_dir="/lab-share/CHIP-Strober-e2/Public/ben/s2e_uncertainty/gtex_eqtl_expression_processing/plink_processed_genotype/"
+processed_genotype_data_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/gtex_eqtl_expression_processing/plink_processed_genotype/"
 
 # Directory containing eQTL summary statistics
-eqtl_sumstats_dir="/lab-share/CHIP-Strober-e2/Public/ben/s2e_uncertainty/gtex_eqtl_expression_processing/eqtl_results/"
+eqtl_sumstats_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/gtex_eqtl_expression_processing/eqtl_results/"
 
 # Directory containing borzoi gtex target indices and names
-borzoi_gtex_unique_target_names_file="/lab-share/CHIP-Strober-e2/Public/ben/borzoi_genome_wide_run/genome_wide/borzoi_predictions/targets_gtex_eqtl_only_unique_ordered.txt"
+borzoi_gtex_unique_target_names_file="/lab-share/CHIP-Strober-e2/Public/ben/borzoi_genome_wide_run/genome_wide/borzoi_predictions/targets_gtex_v8_eqtl_only_unique_ordered.txt"
 
 
 # SLDMC Output root directory (created from SLDMC analysis code base)
@@ -69,8 +69,8 @@ for tissue_sample1 in $tissue_sample_pairs; do
 		genotype_sample_mapping_file1=$processed_genotype_data_dir"genotype_sample_mapping_to_"${target_tissue1}"_expression_samples.txt"
 		genotype_sample_mapping_file2=$processed_genotype_data_dir"genotype_sample_mapping_to_"${target_tissue2}"_expression_samples.txt"
 
-		expr_file1=${gtex_expr_dir}${target_tissue1}".v10.residualized_expression_renormalized.bed"
-		expr_file2=${gtex_expr_dir}${target_tissue2}".v10.residualized_expression_renormalized.bed"
+		expr_file1=${gtex_expr_dir}${target_tissue1}".v8.residualized_expression_renormalized.bed"
+		expr_file2=${gtex_expr_dir}${target_tissue2}".v8.residualized_expression_renormalized.bed"
 
 		expr_differences_output_file=${expression_differences_results_dir}"expr_differences_summary_"${target_tissue1}"_"${target_sample1}"_vs_"${target_tissue2}"_"${target_sample2}"_"${anno_method}".txt.gz"
 

@@ -34,4 +34,5 @@ python predict_expression_differences_across_tissue_pairs_in_shared_individuals.
 	--borzoi-effect-file2 $borzoi_effect_file2 \
 	--borzoi-annotation-file2 $borzoi_annotation_file2 \
 	--genotype-sample-mapping-file2 $genotype_sample_mapping_file2 \
-	--expr-file2 $expr_file2
+	--expr-file2 $expr_file2 \
+	--missing-genotype-handling "drop_missing"
