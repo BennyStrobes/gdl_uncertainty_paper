@@ -40,12 +40,14 @@ sldmc_variant_gene_annotation_file=${est_borzoi_effect_size_dir}"sim"${simulatio
 sldmc_annotation_category_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}"_sim_variant_gene_annotations_"${n_anno}"_annotations_sldmc_categories.txt"
 python simulate_est_borzoi_effects_for_correlation_experiment.py $causal_variant_gene_effect_size_file $est_borzoi_standardized_effect_size_file ${simulation_iter} $sim_variant_gene_annotation_file $n_anno $sldmc_variant_gene_annotation_file $sldmc_annotation_category_file
 
+
 ####################################################
 # Part 2.5: Generate true simulated calibration effect sizes + correlation
 ####################################################
 echo "PART 2.5"
 simulation_parameter_summary_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}"_sim_variant_gene_annotations_"${n_anno}"_true_sim_effect_summary.txt"
 python calculate_true_simulated_calibration_effect_sizes_and_correlation.py $est_borzoi_standardized_effect_size_file $sim_variant_gene_annotation_file $causal_variant_gene_effect_size_file $simulation_parameter_summary_file
+
 
 ####################################################
 # Part 3: Simulate estimated eqtl effect sizes
@@ -61,6 +63,7 @@ conda activate susie
 python simulate_eqtl_analysis.py $causal_variant_gene_effect_size_file $est_eqtl_effect_size_file $gene_ld_summary_file $onek_genomes_plink_filestem $eqtl_sample_size $simulation_iter $ind_expr_file $susie_fine_mapping_file $genotype_sample_mapping_file
 
 
+
 ####################################################
 # Part 4: Simulate estimated eqtl effect sizes
 ####################################################
@@ -70,6 +73,7 @@ est_borzoi_effect_size_file=${est_borzoi_effect_size_dir}"sim"${simulation_iter}
 source ~/.bashrc
 conda activate plink_env
 python convert_borzoi_standardized_effects_to_per_allele_effects.py $est_eqtl_effect_size_file $est_borzoi_standardized_effect_size_file $est_borzoi_effect_size_file
+
 
 
 ####################################################
