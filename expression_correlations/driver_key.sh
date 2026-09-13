@@ -30,12 +30,13 @@ expression_correlations_root_directory="/lab-share/CHIP-Strober-e2/Public/ben/gd
 
 per_tissue_personalized_expression_dir=${expression_correlations_root_directory}"personalized_expression_per_tissue/"
 
+visualize_personalized_expression_dir=${expression_correlations_root_directory}"visualize_personalized_expression/"
+
+
 
 #########################
 # Code
 #########################
-
-
 if false; then
 tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
     borzoi_results_file=${borzoi_predicted_effect_sizes_directory}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
@@ -48,3 +49,13 @@ tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r ori
     sbatch personalized_expression_correlations_per_tissue.sh $sldmc_summary_file $borzoi_results_file $expression_file $plink_genotype_stem $genotype_sample_mapping_file $expression_correlation_output_file
 done
 fi
+
+
+
+#########################
+# Visualize personalized expression correlation results (five tissues, heritable genes only)
+#########################
+source ~/.bashrc
+conda activate plink_env
+Rscript visualize_personalized_expression_correlations.R $per_tissue_personalized_expression_dir $borzoi_gtex_unique_target_names_file $visualize_personalized_expression_dir
+
