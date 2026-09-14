@@ -156,7 +156,8 @@ make_per_tissue_fsr_calibration_panel_plot <- function(summary_df, tissue_colors
 		facet_wrap(~tissue, nrow=1) +
 		scale_color_manual(values=tissue_colors_use) +
 		scale_x_continuous(breaks=seq_along(fsr_bin_labels), labels=fsr_bin_labels) +
-		scale_y_continuous(limits=c(-0.09, 0.6), breaks=seq(0, 0.6, by=0.1)) +
+		scale_y_continuous(breaks=seq(0, 0.6, by=0.1)) +
+		coord_cartesian(ylim=c(-0.09, 0.6)) +
 		figure_theme() +
 		theme(
 			legend.position="none",
@@ -190,7 +191,8 @@ make_overlaid_fsr_calibration_plot <- function(summary_df, tissue_colors, xlab) 
 		geom_point(size=2.2, na.rm=TRUE) +
 		scale_color_manual(values=tissue_colors_use, name="Tissue") +
 		scale_x_continuous(breaks=seq_along(fsr_bin_labels), labels=fsr_bin_labels) +
-		scale_y_continuous(limits=c(0, 0.6), breaks=seq(0, 0.6, by=0.1)) +
+		scale_y_continuous(breaks=seq(0, 0.6, by=0.1)) +
+		coord_cartesian(ylim=c(0, 0.6)) +
 		figure_theme() +
 		theme(
 			legend.position="right",
@@ -293,7 +295,7 @@ five_tissue_colors = c(
 	"Whole_Blood"="#C44E52",
 	"Muscle_Skeletal"="#8172B3"
 )
-missing_tissues = setdiff(names(five_tissue_colors), unique(heritable_results_df$target_tissue))
+missing_tissues = setdiff(names(five_tissue_colors), unique(results_df$target_tissue))
 if (length(missing_tissues) > 0) {
 	print(paste("WARNING: no expression correlation results for:", paste(missing_tissues, collapse=", ")))
 }
@@ -303,29 +305,42 @@ if (length(missing_tissues) > 0) {
 # Calibration and mean correlation plots, once per expression-FSR definition
 # expression_FSR: residual variance constant within borzoi magnitude bin
 # expression_FSR_af_specific: allele-frequency-specific residual variance
+# Each is made twice: for heritable genes (cis-h2 LRT p < threshold; the main figures, no suffix in
+# the file name) and for all analyzed genes (file names carry the "_all_genes" suffix).
 #####################
 fsr_definitions = c("expression_FSR", "expression_FSR_af_specific")
 fsr_xlabs = c("expression_FSR"="Expression-FSR", "expression_FSR_af_specific"="Expression-FSR (AF-specific)")
 
-for (fsr_col in fsr_definitions) {
-	print(paste("Plotting", fsr_col))
-	summary_df = compute_fsr_bin_summary_df(heritable_results_df, fsr_col, five_tissue_colors)
-	print(summary_df)
-	xlab = fsr_xlabs[[fsr_col]]
+gene_sets = list(
+	heritable_genes=list(df=heritable_results_df, suffix=""),
+	all_genes=list(df=results_df, suffix="_all_genes")
+)
 
-	# Calibration: one panel per tissue
-	per_tissue_calibration_plot = make_per_tissue_fsr_calibration_panel_plot(summary_df, five_tissue_colors, xlab)
-	ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_calibration_per_tissue_panels.pdf"), per_tissue_calibration_plot, width=9.5, height=2.9)
+for (gene_set_name in names(gene_sets)) {
+	gene_set_df = gene_sets[[gene_set_name]]$df
+	file_suffix = gene_sets[[gene_set_name]]$suffix
 
-	# Calibration: all tissues overlaid in one panel
-	overlaid_calibration_plot = make_overlaid_fsr_calibration_plot(summary_df, five_tissue_colors, xlab)
-	ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_calibration_overlaid.pdf"), overlaid_calibration_plot, width=6.0, height=3.2)
+	for (fsr_col in fsr_definitions) {
+		print(paste("Plotting", fsr_col, "for", gene_set_name, "(", nrow(gene_set_df), "genes )"))
+		summary_df = compute_fsr_bin_summary_df(gene_set_df, fsr_col, five_tissue_colors)
+		print(summary_df)
+		write.table(summary_df, paste0(visualization_dir, "five_tissue_", fsr_col, "_bin_summary", file_suffix, ".txt"), quote=FALSE, sep="\t", row.names=FALSE)
+		xlab = fsr_xlabs[[fsr_col]]
 
-	# Mean rescaled expression correlation in each expression-FSR bin
-	mean_correlation_plot = make_five_tissue_mean_correlation_bar_plot(summary_df, five_tissue_colors, xlab)
-	ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_mean_correlation.pdf"), mean_correlation_plot, width=6.0, height=3.2)
+		# Calibration: one panel per tissue
+		per_tissue_calibration_plot = make_per_tissue_fsr_calibration_panel_plot(summary_df, five_tissue_colors, xlab)
+		ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_calibration_per_tissue_panels", file_suffix, ".pdf"), per_tissue_calibration_plot, width=9.5, height=2.9)
 
-	# Joint calibration (overlaid) + mean correlation plot (shared x-axis and shared legend)
-	joint_plot = make_stacked_shared_x_plot(overlaid_calibration_plot, mean_correlation_plot, c("a", "b"))
-	ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_joint_calibration_mean_correlation.pdf"), joint_plot, width=6.0, height=5.4)
+		# Calibration: all tissues overlaid in one panel
+		overlaid_calibration_plot = make_overlaid_fsr_calibration_plot(summary_df, five_tissue_colors, xlab)
+		ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_calibration_overlaid", file_suffix, ".pdf"), overlaid_calibration_plot, width=6.0, height=3.2)
+
+		# Mean rescaled expression correlation in each expression-FSR bin
+		mean_correlation_plot = make_five_tissue_mean_correlation_bar_plot(summary_df, five_tissue_colors, xlab)
+		ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_mean_correlation", file_suffix, ".pdf"), mean_correlation_plot, width=6.0, height=3.2)
+
+		# Joint calibration (overlaid) + mean correlation plot (shared x-axis and shared legend)
+		joint_plot = make_stacked_shared_x_plot(overlaid_calibration_plot, mean_correlation_plot, c("a", "b"))
+		ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_joint_calibration_mean_correlation", file_suffix, ".pdf"), joint_plot, width=6.0, height=5.4)
+	}
 }

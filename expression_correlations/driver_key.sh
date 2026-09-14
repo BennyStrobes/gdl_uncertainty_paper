@@ -53,7 +53,7 @@ fi
 
 
 #########################
-# Visualize personalized expression correlation results (five tissues, heritable genes only)
+# Visualize personalized expression correlation results (five tissues; heritable genes and all genes)
 #########################
 source ~/.bashrc
 conda activate plink_env
