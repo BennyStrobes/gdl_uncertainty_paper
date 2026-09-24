@@ -50,12 +50,11 @@ tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r ori
 done
 fi
 
-
-
 #########################
 # Visualize personalized expression correlation results (five tissues; heritable genes and all genes)
 #########################
+if false; then
 source ~/.bashrc
 conda activate plink_env
 Rscript visualize_personalized_expression_correlations.R $per_tissue_personalized_expression_dir $borzoi_gtex_unique_target_names_file $visualize_personalized_expression_dir
-
+fi

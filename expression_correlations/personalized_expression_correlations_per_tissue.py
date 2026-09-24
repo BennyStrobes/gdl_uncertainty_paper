@@ -258,6 +258,63 @@ def estimate_cis_snp_heritability_with_lrt(genotype_mat, expr_vec):
 	return h2, lrt_pvalue
 
 
+def compute_cis_grm(genotype_mat):
+	# Standardize genotypes in sample (discarding variants with no variance) and return the cis GRM X X^T / m
+	X = np.asarray(genotype_mat, dtype=float)
+	X = X - np.mean(X, axis=0)
+	snp_sdevs = np.std(X, axis=0)
+	valid_snps = np.isfinite(snp_sdevs) & (snp_sdevs > 0.0)
+	if np.sum(valid_snps) == 0:
+		return None
+	X = X[:, valid_snps]/snp_sdevs[valid_snps][None, :]
+	return np.dot(X, np.transpose(X))/X.shape[1]
+
+
+def estimate_cis_snp_heritability_with_he_regression(genotype_mat, expr_vec):
+	# Haseman-Elston regression estimate of cis-SNP heritability with an analytic standard error.
+	# Regress y_i y_k on GRM_ik (with an intercept) over all pairs i != k of the mean-centered expression y; the slope
+	# divided by Var(y) is h2. Unlike the bounded MLE above this is unbiased under the single-component model and can be
+	# negative, which matters when averaging over low-h2 genes (e.g. when comparing against predicted_cis_snp_h2).
+	# Standard error: the estimate is a ratio of quadratic forms in y, R = (y^T W y) / (y^T y / n), with W symmetric and
+	# zero-diagonal. Var(R) follows from Var(y^T M y) = 2 tr(M S M S), Cov(y^T M y, y^T P y) = 2 tr(M S P S) and the delta
+	# method, with S the covariance of the centered y under the fitted single-component model h2*GRM + (1-h2)*I (h2
+	# clipped to [0, 1]). Because W has zero diagonal this needs no kurtosis assumption on the residuals, only that they
+	# are independent and homoscedastic. Resampling individuals is deliberately not used: under h2 = 0, y^T W y is a
+	# degenerate U-statistic, for which the delete-one jackknife and the naive bootstrap over individuals overstate the
+	# variance (~2x; checked by simulation).
+	y = np.asarray(expr_vec, dtype=float)
+	y = y - np.mean(y)
+	n = len(y)
+	grm = compute_cis_grm(genotype_mat)
+	var_y = np.mean(np.square(y))
+	if grm is None or n < 3 or var_y <= 0.0:
+		return np.nan, np.nan
+
+	# W_ik = (GRM_ik - mean off-diagonal GRM) / sum_{i != k} (GRM_ik - mean)^2 for i != k, and 0 on the diagonal,
+	# so that y^T W y is the OLS slope (with intercept) of y_i y_k on GRM_ik over pairs i != k
+	off_diag = ~np.eye(n, dtype=bool)
+	W = grm - np.mean(grm[off_diag])
+	W[~off_diag] = 0.0
+	sxx = np.sum(np.square(W))
+	if sxx <= 0.0:
+		return np.nan, np.nan
+	W = W/sxx
+	he_h2 = float(np.dot(y, np.dot(W, y))/var_y)
+
+	# Analytic standard error. Covariance of the centered y under the fitted model:
+	# C (s2_g GRM + s2_e I) C = s2_g GRM + s2_e C, since the in-sample GRM is already double-centered (GRM 1 = 0)
+	h2_fit = np.clip(he_h2, 0.0, 1.0)
+	centering = np.eye(n) - 1.0/n
+	Sigma = var_y*(h2_fit*grm + (1.0 - h2_fit)*centering)
+	W_Sigma = np.dot(W, Sigma)
+	var_q1 = 2.0*np.sum(W_Sigma*np.transpose(W_Sigma))   # Var(y^T W y)            = 2 tr(W S W S)
+	cov_q1_q2 = 2.0*np.sum(W_Sigma*Sigma)/n             # Cov(y^T W y, y^T y / n) = 2 tr(W S S) / n
+	var_q2 = 2.0*np.sum(np.square(Sigma))/np.square(n)  # Var(y^T y / n)          = 2 tr(S S) / n^2
+	var_h2 = (var_q1 - 2.0*he_h2*cov_q1_q2 + np.square(he_h2)*var_q2)/np.square(var_y)
+	he_h2_se = float(np.sqrt(np.maximum(var_h2, 0.0)))
+	return he_h2, he_h2_se
+
+
 def compute_directional_fsr(genotype_mat, rescaled_pred_expr, per_snp_mu, per_snp_sd, n_samp):
 	# Monte Carlo directional false sign rate:
 	# probability that the reported score (X mu) points the wrong way relative to a draw of the
@@ -275,6 +332,16 @@ def compute_directional_fsr(genotype_mat, rescaled_pred_expr, per_snp_mu, per_sn
 
 	directional_fsr = np.mean(alignment_samples < 0)
 	return directional_fsr
+
+
+def compute_predicted_cis_snp_heritability(rescaled_pred_expr, per_snp_sd):
+	# Predicted (expected) cis-SNP heritability of expression given the rescaled borzoi predictions:
+	# E[Var_i(X beta) | borzoi] with beta_j ~ N(mu_j, sd_j^2) independently per snp and X standardized in sample
+	#   = Var_i(X mu) + sum_j sd_j^2
+	# This is the closed form of the mean over Monte Carlo draws of Var_i(X beta^(s)); the LD cross-terms are
+	# carried entirely by Var_i(X mu) because the residuals are independent across snps and diag(X^T X / n) = 1.
+	# On the standardized-expression scale of the S-LDMC estimates, so directly comparable to cis_snp_h2.
+	return np.var(rescaled_pred_expr) + np.sum(np.square(per_snp_sd))
 
 
 def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bins, chunk_size=10000):
@@ -346,7 +413,7 @@ def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genoty
 def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, output_file):
 	# Initialize output file
 	t = open(output_file,'w')
-	t.write('gene_id\traw_expression_correlation\trescaled_expression_correlation\texpression_FSR\texpression_FSR_af_specific\tcis_snp_h2\tcis_snp_h2_pvalue\n')
+	t.write('gene_id\traw_expression_correlation\trescaled_expression_correlation\texpression_FSR\texpression_FSR_af_specific\tcis_snp_h2\tcis_snp_h2_pvalue\tcis_snp_h2_he\tcis_snp_h2_he_se\tpredicted_cis_snp_h2\tpredicted_cis_snp_h2_af_specific\n')
 
 	n_genes_analyzed = 0
 
@@ -446,10 +513,19 @@ def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_i
 			else:
 				expression_fsr_af_specific = np.nan
 
+			# Predicted cis-SNP heritability given the rescaled borzoi predictions, under each residual-variance model
+			predicted_cis_snp_h2 = compute_predicted_cis_snp_heritability(rescaled_pred_expr, per_snp_sd)
+			if np.all(np.isfinite(per_snp_sd_af_specific)):
+				predicted_cis_snp_h2_af_specific = compute_predicted_cis_snp_heritability(rescaled_pred_expr, per_snp_sd_af_specific)
+			else:
+				predicted_cis_snp_h2_af_specific = np.nan
+
 			# Cis-SNP heritability of expression (and LRT p-value)
 			cis_snp_h2, cis_snp_h2_pvalue = estimate_cis_snp_heritability_with_lrt(genotype_mat, expr_vec)
+			# Haseman-Elston regression estimate (unbounded, can be negative) with analytic standard error
+			cis_snp_h2_he, cis_snp_h2_he_se = estimate_cis_snp_heritability_with_he_regression(genotype_mat, expr_vec)
 
-			t.write(gene_id + '\t' + str(raw_corry) + '\t' + str(rescaled_corry) + '\t' + str(expression_fsr) + '\t' + str(expression_fsr_af_specific) + '\t' + str(cis_snp_h2) + '\t' + str(cis_snp_h2_pvalue) + '\n')
+			t.write(gene_id + '\t' + str(raw_corry) + '\t' + str(rescaled_corry) + '\t' + str(expression_fsr) + '\t' + str(expression_fsr_af_specific) + '\t' + str(cis_snp_h2) + '\t' + str(cis_snp_h2_pvalue) + '\t' + str(cis_snp_h2_he) + '\t' + str(cis_snp_h2_he_se) + '\t' + str(predicted_cis_snp_h2) + '\t' + str(predicted_cis_snp_h2_af_specific) + '\n')
 			t.flush()
 			n_genes_analyzed = n_genes_analyzed + 1
 
