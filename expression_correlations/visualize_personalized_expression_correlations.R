@@ -17,6 +17,36 @@ fsr_bin_labels = c("[0,0.1]", "(0.1,0.2]", "(0.2,0.3]", "(0.3,0.4]", ">0.4")
 # Heritable genes: cis-SNP heritability LRT p-value below this threshold
 heritability_pvalue_threshold = 0.05
 
+# Observed cis-SNP heritability compared against the predicted heritability: the Haseman-Elston
+# estimate (cis_snp_h2_he) is unbiased and can be negative, unlike the [0,1]-bounded MLE (cis_snp_h2),
+# so its mean over a bin of low-heritability genes is not inflated
+observed_h2_col = "cis_snp_h2_he"
+
+# Number of equal-count bins of predicted cis-SNP heritability (per tissue) in the heritability calibration plot
+predicted_h2_n_bins = 10
+
+# Tissue shown in the per-gene predicted vs observed heritability scatter plot
+h2_scatter_tissue = "Whole_Blood"
+
+
+read_per_tissue_expression_correlation_file <- function(results_file) {
+	# Read one per-gene output file, skipping (with a warning) any line that does not have the header's
+	# number of columns and a last line with no newline terminator: a job that is still running or died
+	# mid-write leaves a cut-off last line.
+	file_text = readChar(results_file, nchars=file.size(results_file), useBytes=TRUE)
+	file_lines = strsplit(file_text, "\n", fixed=TRUE)[[1]]
+	n_fields_per_line = nchar(gsub("[^\t]", "", file_lines)) + 1
+	bad_lines = which(n_fields_per_line != n_fields_per_line[1])
+	if (endsWith(file_text, "\n") == FALSE) {
+		bad_lines = union(bad_lines, length(file_lines))
+	}
+	if (length(bad_lines) > 0) {
+		print(paste0("WARNING: ", results_file, ": skipping ", length(bad_lines), " cut-off line(s) out of ", length(file_lines), " (line ", paste(head(bad_lines, 5), collapse=", "), "); the job is probably still running or died mid-write"))
+		file_lines = file_lines[-bad_lines]
+	}
+	return(read.table(text=file_lines, header=TRUE, sep="\t", quote="", comment.char="", stringsAsFactors=FALSE))
+}
+
 
 load_per_tissue_expression_correlations <- function(per_tissue_expression_correlation_dir, tissue_info_df) {
 	# Stack every tissue's per-gene output file
@@ -31,7 +61,7 @@ load_per_tissue_expression_correlations <- function(per_tissue_expression_correl
 			print(paste("WARNING: per-tissue expression correlation file not found; skipping:", results_file))
 			next
 		}
-		tissue_df = read.table(results_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+		tissue_df = read_per_tissue_expression_correlation_file(results_file)
 		tissue_df$target_tissue = target_tissue
 		results_df = rbind(results_df, tissue_df)
 	}
@@ -256,6 +286,135 @@ make_stacked_shared_x_plot <- function(top_plot, bottom_plot, panel_labels) {
 }
 
 
+compute_predicted_h2_bin_summary_df <- function(df, predicted_h2_col, observed_h2_col, n_bins, tissue_colors) {
+	# One row per (tissue, predicted-heritability bin). Within each tissue the genes are split by rank of
+	# predicted cis-SNP heritability into n_bins equal-count bins; each row carries the bin's mean
+	# predicted heritability and its mean observed heritability with a 95% CI (empirical SE across genes).
+	df = df[df$target_tissue %in% names(tissue_colors), ]
+	df = df[!is.na(df[[predicted_h2_col]]) & !is.na(df[[observed_h2_col]]), ]
+
+	tissue_arr = c()
+	bin_arr = c()
+	n_gene_arr = c()
+	mean_predicted_h2_arr = c()
+	mean_observed_h2_arr = c()
+	mean_observed_h2_lb_arr = c()
+	mean_observed_h2_ub_arr = c()
+
+	for (target_tissue in names(tissue_colors)) {
+		tissue_df = df[df$target_tissue == target_tissue, ]
+		if (nrow(tissue_df) == 0) {
+			next
+		}
+		# Equal-count bins by rank (ties broken by order, so bin sizes differ by at most one gene)
+		tissue_df$h2_bin = ceiling(rank(tissue_df[[predicted_h2_col]], ties.method="first")*n_bins/nrow(tissue_df))
+		for (bin_iter in 1:n_bins) {
+			bin_df = tissue_df[tissue_df$h2_bin == bin_iter, ]
+			n_genes = nrow(bin_df)
+			if (n_genes == 0) {
+				next
+			}
+			mean_predicted_h2 = mean(bin_df[[predicted_h2_col]])
+			mean_observed_h2 = mean(bin_df[[observed_h2_col]])
+			if (n_genes > 1) {
+				mean_observed_h2_se = sd(bin_df[[observed_h2_col]])/sqrt(n_genes)
+			} else {
+				mean_observed_h2_se = NA
+			}
+
+			tissue_arr = c(tissue_arr, target_tissue)
+			bin_arr = c(bin_arr, bin_iter)
+			n_gene_arr = c(n_gene_arr, n_genes)
+			mean_predicted_h2_arr = c(mean_predicted_h2_arr, mean_predicted_h2)
+			mean_observed_h2_arr = c(mean_observed_h2_arr, mean_observed_h2)
+			mean_observed_h2_lb_arr = c(mean_observed_h2_lb_arr, mean_observed_h2 - 1.96*mean_observed_h2_se)
+			mean_observed_h2_ub_arr = c(mean_observed_h2_ub_arr, mean_observed_h2 + 1.96*mean_observed_h2_se)
+		}
+	}
+	summary_df = data.frame(
+		target_tissue=as.character(tissue_arr),
+		predicted_h2_bin=as.integer(bin_arr),
+		n_genes=as.integer(n_gene_arr),
+		mean_predicted_h2=as.numeric(mean_predicted_h2_arr),
+		mean_observed_h2=as.numeric(mean_observed_h2_arr),
+		mean_observed_h2_lb=as.numeric(mean_observed_h2_lb_arr),
+		mean_observed_h2_ub=as.numeric(mean_observed_h2_ub_arr)
+	)
+	tissue_levels = names(tissue_colors)
+	summary_df$tissue = factor(summary_df$target_tissue, levels=tissue_levels, labels=gsub("_", " ", tissue_levels))
+	return(summary_df)
+}
+
+
+make_per_tissue_predicted_vs_observed_h2_panel_plot <- function(summary_df, tissue_colors, xlab, ylab) {
+	# Heritability calibration plot with one panel per tissue (side by side): mean observed cis-SNP
+	# heritability (points with 95% CI, joined by a line, colored by tissue) against the mean predicted
+	# cis-SNP heritability in each equal-count predicted-heritability bin. The dashed line is y = x.
+	# Each panel is annotated with that tissue's gene count.
+	reference_color = "#3F3F46"
+	# Colors keyed by tissue label so the mapping survives tissues that are absent from summary_df
+	tissue_colors_use = setNames(as.character(tissue_colors), gsub("_", " ", names(tissue_colors)))
+
+	n_gene_df = aggregate(n_genes ~ tissue, data=summary_df, FUN=sum)
+	n_gene_df$n_label = paste0("N=", n_gene_df$n_genes, " genes")
+
+	pp = ggplot(summary_df, aes(x=mean_predicted_h2, y=mean_observed_h2, color=tissue)) +
+		geom_abline(slope=1, intercept=0, color=reference_color, linetype="dashed", linewidth=0.6) +
+		geom_line(linewidth=0.7, na.rm=TRUE) +
+		geom_pointrange(aes(ymin=mean_observed_h2_lb, ymax=mean_observed_h2_ub), linewidth=0.7, na.rm=TRUE) +
+		geom_point(size=2.4, na.rm=TRUE) +
+		geom_text(data=n_gene_df, aes(x=-Inf, y=Inf, label=n_label), color=reference_color, size=2.6, hjust=-0.1, vjust=1.6, inherit.aes=FALSE) +
+		facet_wrap(~tissue, nrow=1) +
+		scale_color_manual(values=tissue_colors_use) +
+		figure_theme() +
+		theme(
+			legend.position="none",
+			strip.background=element_blank(),
+			strip.text=element_text(face="bold", size=11),
+			panel.spacing=unit(0.8, "lines")
+		) +
+		labs(x=xlab, y=ylab)
+	return(pp)
+}
+
+
+make_gene_level_predicted_vs_observed_h2_scatter_plot <- function(df, predicted_h2_col, observed_h2_col, point_color, xlab, ylab, title) {
+	# Per-gene scatter of observed against predicted cis-SNP heritability for one tissue (one point per
+	# gene), with the y = x line and the least-squares line of best fit (observed ~ predicted). The gene
+	# count, the best-fit slope and intercept and the Pearson correlation go in the subtitle.
+	plot_df = data.frame(predicted_h2=df[[predicted_h2_col]], observed_h2=df[[observed_h2_col]])
+	plot_df = plot_df[!is.na(plot_df$predicted_h2) & !is.na(plot_df$observed_h2), ]
+	if (nrow(plot_df) < 3) {
+		print(paste("WARNING: fewer than 3 genes with both", predicted_h2_col, "and", observed_h2_col, "in", title, "; skipping the per-gene heritability scatter plot"))
+		return(NULL)
+	}
+	best_fit = lm(observed_h2 ~ predicted_h2, data=plot_df)
+	best_fit_intercept = unname(coef(best_fit)[1])
+	best_fit_slope = unname(coef(best_fit)[2])
+	pearson_r = cor(plot_df$predicted_h2, plot_df$observed_h2)
+	print(paste0(title, " ", predicted_h2_col, " vs ", observed_h2_col, ": N=", nrow(plot_df), " genes; best fit slope=", best_fit_slope, " intercept=", best_fit_intercept, " r=", pearson_r))
+
+	line_levels = c("y = x", "Line of best fit")
+	lines_df = data.frame(line=factor(line_levels, levels=line_levels), slope=c(1, best_fit_slope), intercept=c(0, best_fit_intercept))
+	subtitle = paste0("N = ", nrow(plot_df), " genes; best fit slope = ", sprintf("%.2f", best_fit_slope), ", intercept = ", sprintf("%.3f", best_fit_intercept), "; r = ", sprintf("%.2f", pearson_r))
+
+	pp = ggplot(plot_df, aes(x=predicted_h2, y=observed_h2)) +
+		geom_point(color=point_color, alpha=0.35, size=0.9, stroke=0) +
+		geom_abline(data=lines_df, aes(slope=slope, intercept=intercept, linetype=line, color=line), linewidth=0.7) +
+		scale_color_manual(values=c("y = x"="#3F3F46", "Line of best fit"="#111827"), breaks=line_levels, name=NULL) +
+		scale_linetype_manual(values=c("y = x"="dashed", "Line of best fit"="solid"), breaks=line_levels, name=NULL) +
+		figure_theme() +
+		theme(
+			legend.position="bottom",
+			legend.key=element_blank(),
+			legend.margin=margin(0, 0, 0, 0),
+			plot.subtitle=element_text(size=8.5)
+		) +
+		labs(x=xlab, y=ylab, title=title, subtitle=subtitle)
+	return(pp)
+}
+
+
 
 
 
@@ -305,11 +464,24 @@ if (length(missing_tissues) > 0) {
 # Calibration and mean correlation plots, once per expression-FSR definition
 # expression_FSR: residual variance constant within borzoi magnitude bin
 # expression_FSR_af_specific: allele-frequency-specific residual variance
+# Predicted vs observed cis-SNP heritability plots, once per predicted heritability definition
+# (same two residual-variance models as the expression-FSR definitions)
 # Each is made twice: for heritable genes (cis-h2 LRT p < threshold; the main figures, no suffix in
-# the file name) and for all analyzed genes (file names carry the "_all_genes" suffix).
+# the file name) and for all analyzed genes (file names carry the "_all_genes" suffix). Note that
+# selecting heritable genes on the observed heritability inflates the observed heritability relative
+# to the predicted one (winner's curse), so the all-genes heritability plots are the unbiased ones.
 #####################
 fsr_definitions = c("expression_FSR", "expression_FSR_af_specific")
 fsr_xlabs = c("expression_FSR"="Expression-FSR", "expression_FSR_af_specific"="Expression-FSR (AF-specific)")
+
+predicted_h2_definitions = c("predicted_cis_snp_h2", "predicted_cis_snp_h2_af_specific")
+predicted_h2_xlabs = c("predicted_cis_snp_h2"="Predicted cis-SNP heritability", "predicted_cis_snp_h2_af_specific"="Predicted cis-SNP heritability (AF-specific)")
+observed_h2_ylab = "Observed cis-SNP heritability"
+if (h2_scatter_tissue %in% names(five_tissue_colors)) {
+	h2_scatter_point_color = five_tissue_colors[[h2_scatter_tissue]]
+} else {
+	h2_scatter_point_color = "#3F3F46"
+}
 
 gene_sets = list(
 	heritable_genes=list(df=heritable_results_df, suffix=""),
@@ -342,5 +514,32 @@ for (gene_set_name in names(gene_sets)) {
 		# Joint calibration (overlaid) + mean correlation plot (shared x-axis and shared legend)
 		joint_plot = make_stacked_shared_x_plot(overlaid_calibration_plot, mean_correlation_plot, c("a", "b"))
 		ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_joint_calibration_mean_correlation", file_suffix, ".pdf"), joint_plot, width=6.0, height=5.4)
+	}
+
+	for (predicted_h2_col in predicted_h2_definitions) {
+		print(paste("Plotting", predicted_h2_col, "vs", observed_h2_col, "for", gene_set_name, "(", nrow(gene_set_df), "genes )"))
+		h2_summary_df = compute_predicted_h2_bin_summary_df(gene_set_df, predicted_h2_col, observed_h2_col, predicted_h2_n_bins, five_tissue_colors)
+		print(h2_summary_df)
+		write.table(h2_summary_df, paste0(visualization_dir, "five_tissue_", predicted_h2_col, "_bin_summary", file_suffix, ".txt"), quote=FALSE, sep="\t", row.names=FALSE)
+		xlab = predicted_h2_xlabs[[predicted_h2_col]]
+
+		# Heritability calibration: one panel per tissue, mean observed vs mean predicted heritability per bin
+		if (nrow(h2_summary_df) == 0) {
+			print(paste("WARNING: no genes with both", predicted_h2_col, "and", observed_h2_col, "; skipping the heritability calibration plot"))
+		} else {
+			per_tissue_h2_calibration_plot = make_per_tissue_predicted_vs_observed_h2_panel_plot(h2_summary_df, five_tissue_colors, xlab, observed_h2_ylab)
+			ggsave(paste0(visualization_dir, "five_tissue_", predicted_h2_col, "_calibration_per_tissue_panels", file_suffix, ".pdf"), per_tissue_h2_calibration_plot, width=9.5, height=2.9)
+		}
+
+		# Per-gene scatter of observed vs predicted heritability in one tissue
+		h2_scatter_df = gene_set_df[gene_set_df$target_tissue == h2_scatter_tissue, ]
+		if (nrow(h2_scatter_df) == 0) {
+			print(paste("WARNING: no expression correlation results for", h2_scatter_tissue, "; skipping the per-gene heritability scatter plot"))
+		} else {
+			h2_scatter_plot = make_gene_level_predicted_vs_observed_h2_scatter_plot(h2_scatter_df, predicted_h2_col, observed_h2_col, h2_scatter_point_color, xlab, observed_h2_ylab, gsub("_", " ", h2_scatter_tissue))
+			if (!is.null(h2_scatter_plot)) {
+				ggsave(paste0(visualization_dir, h2_scatter_tissue, "_", predicted_h2_col, "_gene_scatter", file_suffix, ".pdf"), h2_scatter_plot, width=4.8, height=4.6)
+			}
+		}
 	}
 }
