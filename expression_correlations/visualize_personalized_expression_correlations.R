@@ -28,6 +28,9 @@ predicted_h2_n_bins = 10
 # Tissue shown in the per-gene predicted vs observed heritability scatter plot
 h2_scatter_tissue = "Whole_Blood"
 
+# Number of equal-count bins of predicted expression correlation (per tissue) in the correlation calibration plots
+predicted_r_n_bins = 10
+
 
 read_per_tissue_expression_correlation_file <- function(results_file) {
 	# Read one per-gene output file, skipping (with a warning) any line that does not have the header's
@@ -416,6 +419,164 @@ make_gene_level_predicted_vs_observed_h2_scatter_plot <- function(df, predicted_
 
 
 
+add_predicted_expression_correlation_columns <- function(df) {
+	# Per-gene predicted expression correlations derived from the rescaled-prediction variance Var_i(X mu)
+	# (rescaled_predicted_expression_variance) written out by personalized_expression_correlations_per_tissue.py:
+	#  predicted_expression_r: expected corr(X mu, observed expression) = sqrt(Var_i(X mu)), since the
+	#    expected covariance of the prediction with expression is Var_i(X mu) and expression has unit variance.
+	#    Does not depend on the residual-variance model, so there is a single column.
+	#  predicted_genetic_r[_af_specific]: expected corr(X mu, true genetic expression X beta)
+	#    = sqrt(Var_i(X mu) / predicted_cis_snp_h2[_af_specific]) = sqrt(predicted R^2), the fraction of the
+	#    true genetic expression variance captured by the point prediction. One column per residual-variance model.
+	# The observed counterpart of predicted_genetic_r is formed per bin in compute_predicted_r_bin_summary_df
+	# (corr with expression = corr with X beta * sqrt(h2), so observed r / sqrt(observed h2)).
+	df$predicted_expression_r = sqrt(df$rescaled_predicted_expression_variance)
+	df$predicted_genetic_r = sqrt(df$rescaled_predicted_expression_variance/df$predicted_cis_snp_h2)
+	df$predicted_genetic_r_af_specific = sqrt(df$rescaled_predicted_expression_variance/df$predicted_cis_snp_h2_af_specific)
+	return(df)
+}
+
+
+compute_predicted_r_bin_summary_df <- function(df, predicted_r_col, observed_r_col, observed_h2_col, n_bins, tissue_colors) {
+	# One row per (tissue, predicted-correlation bin). Within each tissue the genes are split by rank of
+	# predicted_r_col into n_bins equal-count bins; each row carries the bin's mean predicted correlation
+	# (with 95% CI) and the bin's observed correlation (with 95% CI), where the observed correlation is
+	#   mean(observed_r_col) / sqrt(mean(observed_h2_col))
+	# when observed_h2_col is given, and simply mean(observed_r_col) (empirical SE) when observed_h2_col is NULL.
+	# The square root is taken once, of the bin-mean heritability, rather than per gene: the per-gene h2
+	# estimates are noisy, so the mean of per-gene sqrt(h2) is biased downwards (Jensen) and inflates the
+	# ratio. This also lets observed_h2_col be the unbiased Haseman-Elston estimate, which can be negative
+	# per gene; a bin whose mean heritability is not positive gets NA. SE by the delta method including the
+	# numerator-denominator covariance.
+	df = df[df$target_tissue %in% names(tissue_colors), ]
+	keep = !is.na(df[[predicted_r_col]]) & !is.na(df[[observed_r_col]])
+	if (!is.null(observed_h2_col)) {
+		keep = keep & !is.na(df[[observed_h2_col]])
+	}
+	df = df[keep, ]
+
+	tissue_arr = c()
+	bin_arr = c()
+	n_gene_arr = c()
+	mean_predicted_arr = c()
+	mean_predicted_lb_arr = c()
+	mean_predicted_ub_arr = c()
+	mean_observed_arr = c()
+	mean_observed_lb_arr = c()
+	mean_observed_ub_arr = c()
+
+	for (target_tissue in names(tissue_colors)) {
+		tissue_df = df[df$target_tissue == target_tissue, ]
+		if (nrow(tissue_df) == 0) {
+			next
+		}
+		# Equal-count bins by rank (ties broken by order, so bin sizes differ by at most one gene)
+		tissue_df$r_bin = ceiling(rank(tissue_df[[predicted_r_col]], ties.method="first")*n_bins/nrow(tissue_df))
+		for (bin_iter in 1:n_bins) {
+			bin_df = tissue_df[tissue_df$r_bin == bin_iter, ]
+			n_genes = nrow(bin_df)
+			if (n_genes == 0) {
+				next
+			}
+			predicted_r = bin_df[[predicted_r_col]]
+			observed_r = bin_df[[observed_r_col]]
+			mean_predicted = mean(predicted_r)
+			if (n_genes > 1) {
+				mean_predicted_se = sd(predicted_r)/sqrt(n_genes)
+			} else {
+				mean_predicted_se = NA
+			}
+			if (is.null(observed_h2_col)) {
+				mean_observed = mean(observed_r)
+				if (n_genes > 1) {
+					mean_observed_se = sd(observed_r)/sqrt(n_genes)
+				} else {
+					mean_observed_se = NA
+				}
+			} else {
+				observed_h2 = bin_df[[observed_h2_col]]
+				mean_r = mean(observed_r)
+				mean_h2 = mean(observed_h2)
+				if (mean_h2 > 0) {
+					mean_observed = mean_r/sqrt(mean_h2)
+				} else {
+					print(paste0("WARNING: ", target_tissue, " ", predicted_r_col, " bin ", bin_iter, ": mean ", observed_h2_col, " = ", mean_h2, " is not positive; observed r / sqrt(h2) set to NA"))
+					mean_observed = NA
+				}
+				if (n_genes > 1 && mean_h2 > 0) {
+					var_mean_r = var(observed_r)/n_genes
+					var_mean_h2 = var(observed_h2)/n_genes
+					cov_mean_r_h2 = cov(observed_r, observed_h2)/n_genes
+					# Delta method for g(a, b) = a / sqrt(b): dg/da = 1/sqrt(b), dg/db = -a / (2 b^(3/2))
+					var_ratio = var_mean_r/mean_h2 - mean_r*cov_mean_r_h2/mean_h2^2 + mean_r^2*var_mean_h2/(4.0*mean_h2^3)
+					mean_observed_se = sqrt(max(var_ratio, 0.0))
+				} else {
+					mean_observed_se = NA
+				}
+			}
+
+			tissue_arr = c(tissue_arr, target_tissue)
+			bin_arr = c(bin_arr, bin_iter)
+			n_gene_arr = c(n_gene_arr, n_genes)
+			mean_predicted_arr = c(mean_predicted_arr, mean_predicted)
+			mean_predicted_lb_arr = c(mean_predicted_lb_arr, mean_predicted - 1.96*mean_predicted_se)
+			mean_predicted_ub_arr = c(mean_predicted_ub_arr, mean_predicted + 1.96*mean_predicted_se)
+			mean_observed_arr = c(mean_observed_arr, mean_observed)
+			mean_observed_lb_arr = c(mean_observed_lb_arr, mean_observed - 1.96*mean_observed_se)
+			mean_observed_ub_arr = c(mean_observed_ub_arr, mean_observed + 1.96*mean_observed_se)
+		}
+	}
+	summary_df = data.frame(
+		target_tissue=as.character(tissue_arr),
+		predicted_r_bin=as.integer(bin_arr),
+		n_genes=as.integer(n_gene_arr),
+		mean_predicted_r=as.numeric(mean_predicted_arr),
+		mean_predicted_r_lb=as.numeric(mean_predicted_lb_arr),
+		mean_predicted_r_ub=as.numeric(mean_predicted_ub_arr),
+		mean_observed_r=as.numeric(mean_observed_arr),
+		mean_observed_r_lb=as.numeric(mean_observed_lb_arr),
+		mean_observed_r_ub=as.numeric(mean_observed_ub_arr)
+	)
+	tissue_levels = names(tissue_colors)
+	summary_df$tissue = factor(summary_df$target_tissue, levels=tissue_levels, labels=gsub("_", " ", tissue_levels))
+	return(summary_df)
+}
+
+
+make_per_tissue_predicted_vs_observed_r_panel_plot <- function(summary_df, tissue_colors, xlab, ylab) {
+	# Expression correlation calibration plot with one panel per tissue (side by side): observed
+	# correlation (points with 95% CI, joined by a line, colored by tissue) against the mean predicted
+	# correlation (with 95% CI) in each equal-count predicted-correlation bin. The dashed line is y = x.
+	# Each panel is annotated with that tissue's gene count.
+	reference_color = "#3F3F46"
+	# Colors keyed by tissue label so the mapping survives tissues that are absent from summary_df
+	tissue_colors_use = setNames(as.character(tissue_colors), gsub("_", " ", names(tissue_colors)))
+
+	n_gene_df = aggregate(n_genes ~ tissue, data=summary_df, FUN=sum)
+	n_gene_df$n_label = paste0("N=", n_gene_df$n_genes, " genes")
+
+	pp = ggplot(summary_df, aes(x=mean_predicted_r, y=mean_observed_r, color=tissue)) +
+		geom_abline(slope=1, intercept=0, color=reference_color, linetype="dashed", linewidth=0.6) +
+		geom_line(linewidth=0.7, na.rm=TRUE) +
+		geom_linerange(aes(xmin=mean_predicted_r_lb, xmax=mean_predicted_r_ub), linewidth=0.7, na.rm=TRUE) +
+		geom_pointrange(aes(ymin=mean_observed_r_lb, ymax=mean_observed_r_ub), linewidth=0.7, na.rm=TRUE) +
+		geom_point(size=2.4, na.rm=TRUE) +
+		geom_text(data=n_gene_df, aes(x=-Inf, y=Inf, label=n_label), color=reference_color, size=2.6, hjust=-0.1, vjust=1.6, inherit.aes=FALSE) +
+		facet_wrap(~tissue, nrow=1) +
+		scale_color_manual(values=tissue_colors_use) +
+		figure_theme() +
+		theme(
+			legend.position="none",
+			strip.background=element_blank(),
+			strip.text=element_text(face="bold", size=11),
+			panel.spacing=unit(0.8, "lines")
+		) +
+		labs(x=xlab, y=ylab)
+	return(pp)
+}
+
+
+
 
 
 #####################
@@ -434,6 +595,15 @@ tissue_info_df = read.table(tissue_names_file, header=TRUE, sep="\t")
 
 # Per-gene expression correlation results across all tissues
 results_df = load_per_tissue_expression_correlations(per_tissue_expression_correlation_dir, tissue_info_df)
+
+# Predicted expression correlations (need the rescaled_predicted_expression_variance column, absent from
+# per-tissue files produced by older versions of the python script: then those plots are skipped)
+has_predicted_expression_correlation = "rescaled_predicted_expression_variance" %in% colnames(results_df)
+if (has_predicted_expression_correlation) {
+	results_df = add_predicted_expression_correlation_columns(results_df)
+} else {
+	print("WARNING: rescaled_predicted_expression_variance column not found in the per-tissue results; skipping the predicted expression correlation plots (rerun personalized_expression_correlations_per_tissue.py)")
+}
 
 # Restrict to heritable genes
 heritable_results_df = restrict_to_heritable_genes(results_df, heritability_pvalue_threshold)
@@ -477,6 +647,14 @@ fsr_xlabs = c("expression_FSR"="Expression-FSR", "expression_FSR_af_specific"="E
 predicted_h2_definitions = c("predicted_cis_snp_h2", "predicted_cis_snp_h2_af_specific")
 predicted_h2_xlabs = c("predicted_cis_snp_h2"="Predicted cis-SNP heritability", "predicted_cis_snp_h2_af_specific"="Predicted cis-SNP heritability (AF-specific)")
 observed_h2_ylab = "Observed cis-SNP heritability"
+
+# Predicted expression correlation on the genetic-expression scale, once per residual-variance model
+# (named by column; value is the x-axis label), plus the single observed-expression-scale definition
+observed_r_col = "rescaled_expression_correlation"
+predicted_genetic_r_definitions = c("predicted_genetic_r"="Predicted r with genetic expression", "predicted_genetic_r_af_specific"="Predicted r with genetic expression (AF-specific)")
+observed_genetic_r_ylab = "Observed r / sqrt(observed cis-SNP h2)"
+predicted_expression_r_xlab = "Predicted r with observed expression"
+observed_expression_r_ylab = "Observed r with observed expression"
 if (h2_scatter_tissue %in% names(five_tissue_colors)) {
 	h2_scatter_point_color = five_tissue_colors[[h2_scatter_tissue]]
 } else {
@@ -540,6 +718,40 @@ for (gene_set_name in names(gene_sets)) {
 			if (!is.null(h2_scatter_plot)) {
 				ggsave(paste0(visualization_dir, h2_scatter_tissue, "_", predicted_h2_col, "_gene_scatter", file_suffix, ".pdf"), h2_scatter_plot, width=4.8, height=4.6)
 			}
+		}
+	}
+
+	#####################
+	# Predicted vs observed expression correlation plots (see add_predicted_expression_correlation_columns)
+	# (a) genetic-expression scale, once per predicted heritability definition: x = mean predicted
+	#     corr(X mu, X beta) = sqrt(Var(X mu)/predicted h2); y = mean observed r / sqrt(mean observed h2),
+	#     observed h2 being the Haseman-Elston estimate (observed_h2_col), as in the heritability plots
+	# (b) observed-expression scale (single definition): x = mean predicted corr(X mu, expression)
+	#     = sqrt(Var(X mu)); y = mean observed r
+	#####################
+	if (has_predicted_expression_correlation) {
+		for (predicted_r_col in names(predicted_genetic_r_definitions)) {
+			print(paste("Plotting", predicted_r_col, "vs observed r / sqrt(", observed_h2_col, ") for", gene_set_name, "(", nrow(gene_set_df), "genes )"))
+			r_summary_df = compute_predicted_r_bin_summary_df(gene_set_df, predicted_r_col, observed_r_col, observed_h2_col, predicted_r_n_bins, five_tissue_colors)
+			print(r_summary_df)
+			write.table(r_summary_df, paste0(visualization_dir, "five_tissue_", predicted_r_col, "_bin_summary", file_suffix, ".txt"), quote=FALSE, sep="\t", row.names=FALSE)
+			if (nrow(r_summary_df) == 0) {
+				print(paste("WARNING: no genes with", predicted_r_col, ",", observed_r_col, "and", observed_h2_col, "; skipping the correlation calibration plot"))
+			} else {
+				per_tissue_r_calibration_plot = make_per_tissue_predicted_vs_observed_r_panel_plot(r_summary_df, five_tissue_colors, predicted_genetic_r_definitions[[predicted_r_col]], observed_genetic_r_ylab)
+				ggsave(paste0(visualization_dir, "five_tissue_", predicted_r_col, "_calibration_per_tissue_panels", file_suffix, ".pdf"), per_tissue_r_calibration_plot, width=9.5, height=2.9)
+			}
+		}
+
+		print(paste("Plotting predicted_expression_r vs", observed_r_col, "for", gene_set_name, "(", nrow(gene_set_df), "genes )"))
+		r_summary_df = compute_predicted_r_bin_summary_df(gene_set_df, "predicted_expression_r", observed_r_col, NULL, predicted_r_n_bins, five_tissue_colors)
+		print(r_summary_df)
+		write.table(r_summary_df, paste0(visualization_dir, "five_tissue_predicted_expression_r_bin_summary", file_suffix, ".txt"), quote=FALSE, sep="\t", row.names=FALSE)
+		if (nrow(r_summary_df) == 0) {
+			print(paste("WARNING: no genes with predicted_expression_r and", observed_r_col, "; skipping the correlation calibration plot"))
+		} else {
+			per_tissue_r_calibration_plot = make_per_tissue_predicted_vs_observed_r_panel_plot(r_summary_df, five_tissue_colors, predicted_expression_r_xlab, observed_expression_r_ylab)
+			ggsave(paste0(visualization_dir, "five_tissue_predicted_expression_r_calibration_per_tissue_panels", file_suffix, ".pdf"), per_tissue_r_calibration_plot, width=9.5, height=2.9)
 		}
 	}
 }

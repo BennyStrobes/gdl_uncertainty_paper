@@ -413,7 +413,7 @@ def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genoty
 def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, output_file):
 	# Initialize output file
 	t = open(output_file,'w')
-	t.write('gene_id\traw_expression_correlation\trescaled_expression_correlation\texpression_FSR\texpression_FSR_af_specific\tcis_snp_h2\tcis_snp_h2_pvalue\tcis_snp_h2_he\tcis_snp_h2_he_se\tpredicted_cis_snp_h2\tpredicted_cis_snp_h2_af_specific\n')
+	t.write('gene_id\traw_expression_correlation\trescaled_expression_correlation\texpression_FSR\texpression_FSR_af_specific\tcis_snp_h2\tcis_snp_h2_pvalue\tcis_snp_h2_he\tcis_snp_h2_he_se\tpredicted_cis_snp_h2\tpredicted_cis_snp_h2_af_specific\trescaled_predicted_expression_variance\n')
 
 	n_genes_analyzed = 0
 
@@ -513,6 +513,11 @@ def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_i
 			else:
 				expression_fsr_af_specific = np.nan
 
+			# In-sample variance of the rescaled prediction: Var_i(X mu).
+			# Numerator of the predicted R^2 = Var_i(X mu) / predicted_cis_snp_h2 (fraction of the true genetic
+			# expression variance captured by the point prediction); the denominator is written out below.
+			rescaled_pred_expr_variance = np.var(rescaled_pred_expr)
+
 			# Predicted cis-SNP heritability given the rescaled borzoi predictions, under each residual-variance model
 			predicted_cis_snp_h2 = compute_predicted_cis_snp_heritability(rescaled_pred_expr, per_snp_sd)
 			if np.all(np.isfinite(per_snp_sd_af_specific)):
@@ -525,7 +530,7 @@ def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_i
 			# Haseman-Elston regression estimate (unbounded, can be negative) with analytic standard error
 			cis_snp_h2_he, cis_snp_h2_he_se = estimate_cis_snp_heritability_with_he_regression(genotype_mat, expr_vec)
 
-			t.write(gene_id + '\t' + str(raw_corry) + '\t' + str(rescaled_corry) + '\t' + str(expression_fsr) + '\t' + str(expression_fsr_af_specific) + '\t' + str(cis_snp_h2) + '\t' + str(cis_snp_h2_pvalue) + '\t' + str(cis_snp_h2_he) + '\t' + str(cis_snp_h2_he_se) + '\t' + str(predicted_cis_snp_h2) + '\t' + str(predicted_cis_snp_h2_af_specific) + '\n')
+			t.write(gene_id + '\t' + str(raw_corry) + '\t' + str(rescaled_corry) + '\t' + str(expression_fsr) + '\t' + str(expression_fsr_af_specific) + '\t' + str(cis_snp_h2) + '\t' + str(cis_snp_h2_pvalue) + '\t' + str(cis_snp_h2_he) + '\t' + str(cis_snp_h2_he_se) + '\t' + str(predicted_cis_snp_h2) + '\t' + str(predicted_cis_snp_h2_af_specific) + '\t' + str(rescaled_pred_expr_variance) + '\n')
 			t.flush()
 			n_genes_analyzed = n_genes_analyzed + 1
 
