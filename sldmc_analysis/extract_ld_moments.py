@@ -308,7 +308,9 @@ def extract_and_write_ld_moments(gene_id_to_est_borzoi_effects, gene_id_to_est_e
 		target_anno_indices.append(matching_indices[0])
 
 	t = gzip.open(output_file, 'wt')
-	header_columns = ['gene_id', 'variant_id', 'std_eqtl_effect_size']
+	# std_borzoi_effect is the pair's own (standardized, genotype-allele-oriented) Borzoi effect,
+	# i.e. the causal effect before any LD propagation; nan if the variant has no Borzoi effect
+	header_columns = ['gene_id', 'variant_id', 'std_eqtl_effect_size', 'std_borzoi_effect']
 	for anno_name in target_anno_names:
 		for category_name in anno_name_to_category_names[anno_name]:
 			header_columns.append(anno_name + 'X' + category_name)
@@ -408,6 +410,10 @@ def extract_and_write_ld_moments(gene_id_to_est_borzoi_effects, gene_id_to_est_e
 
 			LD = np.corrcoef(geno_mat)
 
+			# Keep every variant's own Borzoi effect (nan where missing) before the borzoi-end subsetting
+			# below, so it can be written out alongside the eQTL-observed variants
+			borzoi_effects_full = np.copy(borzoi_effects)
+
 			# Subset LD by missingness
 			# A. on eQTL end
 			observed_eqtl_indices = np.isnan(eqtl_effects) == False
@@ -431,19 +437,58 @@ def extract_and_write_ld_moments(gene_id_to_est_borzoi_effects, gene_id_to_est_e
 
 			# Write one line per eQTL-observed variant with finite LD-means in every column
 			ordered_eqtl_variants = ordered_cis_variants[observed_eqtl_indices]
+			eqtl_variant_borzoi_effects = borzoi_effects_full[observed_eqtl_indices]
 			valid_rows = np.isfinite(eqtl_effects) & np.all(np.isfinite(ld_means), axis=1)
 			for row_iter in np.where(valid_rows)[0]:
-				t.write(gene_id + '\t' + ordered_eqtl_variants[row_iter] + '\t' + str(eqtl_effects[row_iter]) + '\t' + '\t'.join(ld_means[row_iter, :].astype(str)) + '\n')
+				t.write(gene_id + '\t' + ordered_eqtl_variants[row_iter] + '\t' + str(eqtl_effects[row_iter]) + '\t' + str(eqtl_variant_borzoi_effects[row_iter]) + '\t' + '\t'.join(ld_means[row_iter, :].astype(str)) + '\n')
 
 	t.close()
 
 
-def create_binned_ld_moment_file(ld_moment_output_file, binned_ld_moment_output_file, n_bins, ld_moment_column_name='interceptXintercept'):
+def create_gene_jackknife_blocks(gene_ids_in_order, gene_id_to_genomic_position, n_jackknife_blocks):
+	# Assign each gene to one of n_jackknife_blocks contiguous genomic blocks: genes are ordered by
+	# (chromosome, position) and split into equally sized runs, so neighboring genes (which share
+	# cis variants and hence are not independent) land in the same block whenever possible. Genes
+	# without a known position are placed after all positioned genes. Returns an array holding the
+	# block index of each gene in gene_ids_in_order, plus the number of blocks actually used (fewer
+	# than requested when there are fewer genes than blocks).
+	n_genes = len(gene_ids_in_order)
+	chroms = np.zeros(n_genes)
+	positions = np.zeros(n_genes)
+	for gene_iter, gene_id in enumerate(gene_ids_in_order):
+		if gene_id in gene_id_to_genomic_position:
+			chroms[gene_iter] = gene_id_to_genomic_position[gene_id][0]
+			positions[gene_iter] = gene_id_to_genomic_position[gene_id][1]
+		else:
+			chroms[gene_iter] = 1e6
+			positions[gene_iter] = gene_iter
+	genomic_ordering = np.lexsort((positions, chroms))
+	n_blocks = min(n_jackknife_blocks, n_genes)
+	gene_block_ids = np.zeros(n_genes, dtype=int)
+	for block_number, block_gene_indices in enumerate(np.array_split(genomic_ordering, n_blocks)):
+		gene_block_ids[block_gene_indices] = block_number
+	return gene_block_ids, n_blocks
+
+
+def create_binned_ld_moment_file(ld_moment_output_file, binned_ld_moment_output_file, n_bins, gene_id_to_genomic_position, ld_moment_column_name='interceptXintercept', n_jackknife_blocks=200):
 	# Bin the variant-gene pairs from the per-pair LD-moment file into n_bins equally sized groups
-	# ordered by their intercept LD-moment, and write one line per bin holding the bin number, the
-	# bin's average LD-moment, and the bin's average standardized eQTL effect size.
+	# ordered by the ld_moment_column_name column (the intercept LD-moment by default; e.g.
+	# std_borzoi_effect to bin on the pair's own causal Borzoi effect instead), and write one line
+	# per bin holding the bin number, the bin's average value of that column, the bin's average
+	# standardized eQTL effect size with its jackknife standard error and 95% confidence interval,
+	# and the number of pairs in the bin. Pairs with a non-finite value in the binning column are
+	# dropped.
+	# The standard error of each bin's average eQTL effect comes from a delete-one-block jackknife
+	# over genes: genes are grouped into n_jackknife_blocks contiguous genomic blocks (see
+	# create_gene_jackknife_blocks), each block is left out in turn and the bin average recomputed
+	# from the remaining pairs, and SE^2 = (K-1)/K * sum_k (theta_-k - mean(theta_-k))^2 over the K
+	# blocks. Blocking by genomic position accounts for the dependence between pairs of the same
+	# gene and of neighboring genes that share cis variants.
 	ld_moments = []
 	eqtl_effects = []
+	pair_gene_indices = []
+	gene_id_to_gene_index = {}
+	gene_ids_in_order = []
 	f = gzip.open(ld_moment_output_file, 'rt')
 	head_count = 0
 	for line in f:
@@ -454,27 +499,66 @@ def create_binned_ld_moment_file(ld_moment_output_file, binned_ld_moment_output_
 			header = np.asarray(data)
 			ld_moment_column_indices = np.where(header == ld_moment_column_name)[0]
 			eqtl_column_indices = np.where(header == 'std_eqtl_effect_size')[0]
-			if len(ld_moment_column_indices) != 1 or len(eqtl_column_indices) != 1:
+			if len(ld_moment_column_indices) != 1 or len(eqtl_column_indices) != 1 or header[0] != 'gene_id':
 				print('assumption eroror: required columns missing from ' + ld_moment_output_file)
 				pdb.set_trace()
 			ld_moment_column_index = ld_moment_column_indices[0]
 			eqtl_column_index = eqtl_column_indices[0]
 			continue
+		gene_id = data[0]
+		if gene_id not in gene_id_to_gene_index:
+			gene_id_to_gene_index[gene_id] = len(gene_ids_in_order)
+			gene_ids_in_order.append(gene_id)
+		pair_gene_indices.append(gene_id_to_gene_index[gene_id])
 		ld_moments.append(float(data[ld_moment_column_index]))
 		eqtl_effects.append(float(data[eqtl_column_index]))
 	f.close()
 	ld_moments = np.asarray(ld_moments)
 	eqtl_effects = np.asarray(eqtl_effects)
+	pair_gene_indices = np.asarray(pair_gene_indices)
+
+	# Drop pairs with a missing value in the binning column (e.g. eQTL-observed variants with no
+	# Borzoi effect when binning on std_borzoi_effect)
+	finite_indices = np.isfinite(ld_moments) & np.isfinite(eqtl_effects)
+	if np.sum(finite_indices) < len(finite_indices):
+		print(str(len(finite_indices) - np.sum(finite_indices)) + ' of ' + str(len(finite_indices)) + ' pairs dropped for non-finite ' + ld_moment_column_name + ' when binning')
+	ld_moments = ld_moments[finite_indices]
+	eqtl_effects = eqtl_effects[finite_indices]
+	pair_gene_indices = pair_gene_indices[finite_indices]
 
 	# Order pairs by LD-moment and split into n_bins equally sized groups (bin sizes differ by at
 	# most one pair when the number of pairs is not divisible by n_bins)
 	ordering = np.argsort(ld_moments)
 	bin_index_groups = np.array_split(ordering, n_bins)
+	pair_bin_ids = np.zeros(len(ld_moments), dtype=int)
+	for bin_number, bin_indices in enumerate(bin_index_groups):
+		pair_bin_ids[bin_indices] = bin_number
+
+	# Genomic jackknife blocks: block id of every pair via its gene
+	gene_block_ids, n_blocks = create_gene_jackknife_blocks(gene_ids_in_order, gene_id_to_genomic_position, n_jackknife_blocks)
+	pair_block_ids = gene_block_ids[pair_gene_indices]
+
+	# Per (bin, block) sums and counts of the eQTL effects, from which every leave-one-block-out bin
+	# average follows without touching the pairs again
+	bin_block_index = pair_bin_ids*n_blocks + pair_block_ids
+	bin_block_sums = np.bincount(bin_block_index, weights=eqtl_effects, minlength=n_bins*n_blocks).reshape(n_bins, n_blocks)
+	bin_block_counts = np.bincount(bin_block_index, minlength=n_bins*n_blocks).reshape(n_bins, n_blocks).astype(float)
+	bin_sums = np.sum(bin_block_sums, axis=1)
+	bin_counts = np.sum(bin_block_counts, axis=1)
+	with np.errstate(divide='ignore', invalid='ignore'):
+		# theta_-k for every bin (rows) and left-out block (columns); nan where a block held the bin's
+		# every pair (then no leave-out estimate exists)
+		leave_out_means = (bin_sums[:, None] - bin_block_sums)/(bin_counts[:, None] - bin_block_counts)
+	leave_out_centered = leave_out_means - np.nanmean(leave_out_means, axis=1)[:, None]
+	n_valid_blocks = np.sum(np.isfinite(leave_out_means), axis=1)
+	jackknife_ses = np.sqrt(((n_valid_blocks - 1.0)/n_valid_blocks)*np.nansum(np.square(leave_out_centered), axis=1))
 
 	t = open(binned_ld_moment_output_file, 'w')
-	t.write('bin_number\tavg_ld_moment\tavg_std_eqtl_effect_size\n')
+	t.write('bin_number\tavg_ld_moment\tavg_std_eqtl_effect_size\tavg_std_eqtl_effect_size_se\tavg_std_eqtl_effect_size_ci_lower\tavg_std_eqtl_effect_size_ci_upper\tn_pairs\n')
 	for bin_number, bin_indices in enumerate(bin_index_groups):
-		t.write(str(bin_number) + '\t' + str(np.mean(ld_moments[bin_indices])) + '\t' + str(np.mean(eqtl_effects[bin_indices])) + '\n')
+		bin_mean = bin_sums[bin_number]/bin_counts[bin_number]
+		bin_se = jackknife_ses[bin_number]
+		t.write(str(bin_number) + '\t' + str(np.mean(ld_moments[bin_indices])) + '\t' + str(bin_mean) + '\t' + str(bin_se) + '\t' + str(bin_mean - 1.96*bin_se) + '\t' + str(bin_mean + 1.96*bin_se) + '\t' + str(int(bin_counts[bin_number])) + '\n')
 	t.close()
 	print(binned_ld_moment_output_file)
 
@@ -540,5 +624,17 @@ extract_and_write_ld_moments(gene_id_to_est_borzoi_effects, gene_id_to_est_eqtl_
 ##############################
 ld_moment_output_file = ld_moment_output_stem + '_ld_moments.txt.gz'
 n_bins=100
+# Genomic position of each gene (chromosome, smallest cis-variant position), used to build the
+# contiguous gene blocks of the jackknife behind the binned averages' confidence intervals
+gene_id_to_genomic_position = {}
+for gene_id in gene_id_to_est_borzoi_effects:
+	variant_infos = gene_id_to_est_borzoi_effects[gene_id].values()
+	gene_id_to_genomic_position[gene_id] = (int(extract_gene_chrom_num(gene_id_to_est_borzoi_effects[gene_id])), min([int(variant_info[3]) for variant_info in variant_infos]))
 binned_ld_moment_output_file = ld_moment_output_stem + '_binned_' + str(n_bins) + '_ld_moments.txt'
-create_binned_ld_moment_file(ld_moment_output_file, binned_ld_moment_output_file, n_bins)
+create_binned_ld_moment_file(ld_moment_output_file, binned_ld_moment_output_file, n_bins, gene_id_to_genomic_position)
+
+##############################
+# Same, but binning variant-gene pairs by their own causal Borzoi effect (no LD propagation)
+##############################
+binned_causal_borzoi_output_file = ld_moment_output_stem + '_binned_' + str(n_bins) + '_causal_borzoi.txt'
+create_binned_ld_moment_file(ld_moment_output_file, binned_causal_borzoi_output_file, n_bins, gene_id_to_genomic_position, ld_moment_column_name='std_borzoi_effect')

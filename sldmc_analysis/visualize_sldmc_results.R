@@ -571,14 +571,17 @@ make_sldsc_annotation_forest_plot <- function(diff_df, excluded_annotation_regex
 	)
 }
 
-make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log_sigma=NULL) {
+make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log_sigma=NULL, x_label="Average LD-propogated Borzoi effect size") {
 	# Faceted scatter (one panel per selected tissue) of the binned LD-moment results: each point is
 	# one bin of variant-gene pairs (binned on the intercept LD-moment), x = the bin's average
 	# LD-moment, y = the bin's average standardized eQTL effect size. The dashed y=x line marks
 	# perfect calibration; the solid tissue-colored line is the tissue's through-origin least squares
-	# fit to the binned averages, with its slope printed in the panel corner.
-	# Expects the all-tissue long df from load_in_per_tissue_ld_moments; rows are filtered to the
-	# tissues in tissue_colors, whose order sets the panel order.
+	# fit to the binned averages, with its slope printed in the panel corner. When the df carries
+	# ci_lower/ci_upper (the genomic-jackknife 95% CI of each bin's average eQTL effect), they are
+	# drawn as vertical error bars behind the points.
+	# Expects the all-tissue long df from load_in_per_tissue_ld_moments (or the same format from
+	# the causal-Borzoi binned file, in which case x_label should name the binned x variable); rows
+	# are filtered to the tissues in tissue_colors, whose order sets the panel order.
 	# pseudo_log_sigma, when set, draws both axes on a signed pseudo-log scale (linear within about
 	# +/- sigma of zero, log-like beyond), spreading out the mass of near-zero bins. The fitted line
 	# is drawn from a grid of points rather than geom_abline so it curves correctly on those axes
@@ -614,8 +617,9 @@ make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log
 
 	# Axis scales: linear by default, signed pseudo-log around zero when pseudo_log_sigma is set
 	if (is.null(pseudo_log_sigma)) {
-		# Few axis breaks and one-decimal labels: the panels are narrow, so anything more overlaps
-		x_scale = scale_x_continuous(labels=number_format(accuracy=.1), breaks=pretty_breaks(n=3))
+		# Few axis breaks because the panels are narrow; the label precision follows the break spacing
+		# (a fixed one-decimal format prints breaks like 0.05 as "0.0" when the x range is small)
+		x_scale = scale_x_continuous(labels=label_number(), breaks=pretty_breaks(n=3))
 		y_scale = scale_y_continuous(labels=number_format(accuracy=.01), breaks=pretty_breaks(n=4))
 	} else {
 		# The x labels sit side by side in narrow panels, so x gets fewer breaks than y
@@ -627,10 +631,17 @@ make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log
 		y_scale = scale_y_continuous(trans=pseudo_log_trans(sigma=pseudo_log_sigma), breaks=y_pseudo_log_breaks, labels=y_pseudo_log_labels)
 	}
 
+	# 95% CI error bars, only when the df carries them
+	error_bar_layer = NULL
+	if (all(c("ci_lower", "ci_upper") %in% colnames(plot_df)) && any(!is.na(plot_df$ci_lower))) {
+		error_bar_layer = geom_errorbar(aes(ymin=ci_lower, ymax=ci_upper), width=0, linewidth=.3, alpha=.5, show.legend=FALSE)
+	}
+
 	return(
 		ggplot(plot_df, aes(x=avg_ld_moment, y=avg_std_eqtl_effect_size, color=tissue)) +
 		geom_abline(intercept=0, slope=1, linewidth=.4, color="#6B7280", linetype="dashed") +
 		geom_line(data=fit_line_df, linewidth=.45, show.legend=FALSE) +
+		error_bar_layer +
 		geom_point(size=1.1, alpha=.75, show.legend=FALSE) +
 		geom_text(data=slope_df, aes(label=paste0("slope = ", sprintf("%.2f", slope))), x=Inf, y=-Inf, hjust=1.08, vjust=-0.9, size=2.9, color="#374151", show.legend=FALSE) +
 		# Panels are labeled by their strip, so the color legend is redundant
@@ -640,13 +651,160 @@ make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log
 		y_scale +
 		# Equal x/y scaling so the y=x line runs at 45 degrees and slope deviations are readable
 		coord_fixed() +
-		xlab("Average LD-propogated Borzoi effect size") +
+		xlab(x_label) +
 		ylab("Average marginal\neQTL effect size") +
 		figure_theme() +
 		theme(
 			strip.background=element_blank(),
 			strip.text=element_text(face="bold", size=10),
+			# Room between panels and slightly smaller x tick text so neighboring panels' outer x tick
+			# labels do not touch when the x range calls for two-decimal labels
+			panel.spacing.x=unit(1.0, "lines"),
+			axis.text.x=element_text(size=7),
 			plot.margin=margin(8, 14, 8, 8)
+		)
+	)
+}
+
+
+make_single_tissue_unbinned_ld_moment_plot <- function(df, tissue_name, point_color, n_bins=140, x_variable="ld_moment", x_label="LD-propogated Borzoi effect size") {
+	# Single-panel 2D density of every variant-gene pair in one tissue (no binning on the LD-moment):
+	# x = the pair's x_variable column (by default ld_moment, the intercept LD-moment, i.e. the
+	# LD-propagated Borzoi effect size; std_borzoi_effect gives the pair's own causal Borzoi effect
+	# instead), y = the pair's standardized marginal eQTL effect size. With millions of pairs a point
+	# cloud is one solid blob around zero, so the pairs are counted in hexagonal cells (rectangular
+	# cells if the hexbin package is unavailable) and each cell is shaded by its log10 count (light =
+	# few pairs, dark = many), which shows both the dense core and the sparse tails. The axes span
+	# the full range of the pairs, so every pair is shown.
+	# The dashed y=x line marks perfect calibration, the dotted lines mark x=0 and y=0, and the
+	# solid line (spanning the whole panel) is the through-origin least squares fit to all pairs; the
+	# fit's slope, the Pearson correlation and the number of pairs are printed in the panel corner.
+	# Pairs with a missing x value are dropped.
+	# Expects the single-tissue df from load_in_single_tissue_unbinned_ld_moments.
+	plot_df = data.frame(x_value=df[[x_variable]], std_eqtl_effect_size=df$std_eqtl_effect_size)
+	plot_df = plot_df[!is.na(plot_df$x_value), ]
+	if (nrow(plot_df) == 0) {
+		stop(paste("No unbinned LD-moment rows with a", x_variable, "value found for", tissue_name))
+	}
+	tissue_label = gsub("_", " ", tissue_name)
+	slope = sum(plot_df$x_value*plot_df$std_eqtl_effect_size)/sum(plot_df$x_value^2)
+	correlation = cor(plot_df$x_value, plot_df$std_eqtl_effect_size)
+	corner_label = paste0("slope = ", sprintf("%.2f", slope), "\ncorr = ", sprintf("%.2f", correlation), "\nn = ", format(nrow(plot_df), big.mark=","))
+
+	# Density layer: hexagons when hexbin is installed, rectangles otherwise
+	if (requireNamespace("hexbin", quietly=TRUE)) {
+		density_layer = geom_hex(aes(fill=after_stat(count)), bins=n_bins)
+	} else {
+		print("WARNING: hexbin package not installed; falling back to rectangular density cells")
+		density_layer = geom_bin2d(aes(fill=after_stat(count)), bins=n_bins)
+	}
+	# Sequential fill from a pale tint of the tissue color (sparse cells) to a near-black shade (dense cells)
+	fill_colors = colorRampPalette(c("#FBEAEA", point_color, "#2A0608"))(9)
+
+	return(
+		ggplot(plot_df, aes(x=x_value, y=std_eqtl_effect_size)) +
+		density_layer +
+		geom_hline(yintercept=0, linewidth=.3, color="#9CA3AF", linetype="dotted") +
+		geom_vline(xintercept=0, linewidth=.3, color="#9CA3AF", linetype="dotted") +
+		geom_abline(intercept=0, slope=1, linewidth=.4, color="#6B7280", linetype="dashed") +
+		# geom_abline spans the full panel, unlike a line traced over the data range
+		geom_abline(intercept=0, slope=slope, linewidth=.5, color="#111827") +
+		annotate("text", label=corner_label, x=Inf, y=-Inf, hjust=1.08, vjust=-0.4, size=2.9, color="#374151", lineheight=.95) +
+		scale_fill_gradientn(colours=fill_colors, trans="log10", name="Pairs", labels=label_comma()) +
+		scale_x_continuous(labels=number_format(accuracy=.1), breaks=pretty_breaks(n=5)) +
+		scale_y_continuous(labels=number_format(accuracy=.1), breaks=pretty_breaks(n=5)) +
+		xlab(x_label) +
+		ylab("Marginal eQTL effect size") +
+		ggtitle(tissue_label) +
+		figure_theme() +
+		theme(
+			plot.title=element_text(face="bold", size=10, hjust=.5),
+			legend.position="right",
+			legend.title=element_text(size=9),
+			legend.text=element_text(size=8),
+			legend.key.height=unit(.9, "lines"),
+			legend.key.width=unit(.5, "lines"),
+			plot.margin=margin(8, 8, 8, 8)
+		)
+	)
+}
+
+make_five_tissue_unbinned_ld_moment_plot <- function(df, tissue_colors, n_bins=110, x_variable="ld_moment", x_label="LD-propogated Borzoi effect size") {
+	# Faceted version of make_single_tissue_unbinned_ld_moment_plot: one panel per tissue in
+	# tissue_colors (whose order sets the panel order), each a 2D density of every variant-gene pair
+	# in that tissue, x = the x_variable column (ld_moment, the LD-propagated Borzoi effect, by
+	# default; std_borzoi_effect for the pair's own causal Borzoi effect), y = standardized marginal
+	# eQTL effect size. Cells are shaded by their log10 count on one shared ramp, and the panels
+	# share axes so the tissues are directly comparable. Per panel: dashed y=x line, dotted x=0 and
+	# y=0 lines, the tissue's through-origin least squares fit to all of its pairs (solid, in the
+	# tissue color, spanning the whole panel) with the slope and Pearson correlation printed in the
+	# corner. Pairs with a missing x value are dropped.
+	# Expects the all-tissue long df from load_in_per_tissue_unbinned_ld_moments.
+	plot_df = data.frame(tissue=df$tissue, x_value=df[[x_variable]], std_eqtl_effect_size=df$std_eqtl_effect_size)
+	plot_df = plot_df[plot_df$tissue %in% names(tissue_colors) & !is.na(plot_df$x_value), ]
+	missing_tissues = setdiff(names(tissue_colors), unique(plot_df$tissue))
+	if (length(missing_tissues) > 0) {
+		print(paste("WARNING: no unbinned LD-moment results with a", x_variable, "value for:", paste(missing_tissues, collapse=", ")))
+	}
+	if (nrow(plot_df) == 0) {
+		stop("No unbinned LD-moment rows found for any of the selected tissues")
+	}
+	tissue_levels = names(tissue_colors)[names(tissue_colors) %in% plot_df$tissue]
+	tissue_labels = gsub("_", " ", tissue_levels)
+	tissue_labels = gsub("^Heart Left Ventricle$", "Heart\nLeft Ventricle", tissue_labels)
+	plot_df$tissue = factor(plot_df$tissue, levels=tissue_levels, labels=tissue_labels)
+	tissue_colors_use = as.character(tissue_colors[tissue_levels])
+
+	# Through-origin slope and Pearson correlation per tissue
+	slope_df = data.frame()
+	for (tissue_level in levels(plot_df$tissue)) {
+		tissue_rows = plot_df[plot_df$tissue == tissue_level, ]
+		tissue_slope = sum(tissue_rows$x_value*tissue_rows$std_eqtl_effect_size)/sum(tissue_rows$x_value^2)
+		tissue_correlation = cor(tissue_rows$x_value, tissue_rows$std_eqtl_effect_size)
+		slope_df = rbind(slope_df, data.frame(tissue=tissue_level, slope=tissue_slope, correlation=tissue_correlation, n=nrow(tissue_rows)))
+	}
+	slope_df$tissue = factor(slope_df$tissue, levels=levels(plot_df$tissue))
+	slope_df$corner_label = paste0("slope = ", sprintf("%.2f", slope_df$slope), "\ncorr = ", sprintf("%.2f", slope_df$correlation))
+
+	# Density layer: hexagons when hexbin is installed, rectangles otherwise
+	if (requireNamespace("hexbin", quietly=TRUE)) {
+		density_layer = geom_hex(aes(fill=after_stat(count)), bins=n_bins)
+	} else {
+		print("WARNING: hexbin package not installed; falling back to rectangular density cells")
+		density_layer = geom_bin2d(aes(fill=after_stat(count)), bins=n_bins)
+	}
+	# One tissue-neutral sequential ramp shared by all panels (the panels are told apart by their
+	# strip and fit-line color, so the fill does not need to carry tissue identity)
+	fill_colors = colorRampPalette(c("#E5E7EB", "#9CA3AF", "#4B5563", "#111827"))(9)
+
+	return(
+		ggplot(plot_df, aes(x=x_value, y=std_eqtl_effect_size)) +
+		density_layer +
+		geom_hline(yintercept=0, linewidth=.3, color="#9CA3AF", linetype="dotted") +
+		geom_vline(xintercept=0, linewidth=.3, color="#9CA3AF", linetype="dotted") +
+		geom_abline(intercept=0, slope=1, linewidth=.4, color="#6B7280", linetype="dashed") +
+		# geom_abline spans the full panel, unlike a line traced over each tissue's own data range
+		geom_abline(data=slope_df, aes(intercept=0, slope=slope, color=tissue), linewidth=.5, show.legend=FALSE) +
+		geom_text(data=slope_df, aes(label=corner_label), x=Inf, y=-Inf, hjust=1.08, vjust=-0.5, size=2.6, color="#374151", lineheight=.95) +
+		facet_wrap(~tissue, nrow=1) +
+		scale_color_manual(values=tissue_colors_use, guide="none") +
+		scale_fill_gradientn(colours=fill_colors, trans="log10", name="Pairs", labels=label_comma()) +
+		scale_x_continuous(labels=number_format(accuracy=.1), breaks=pretty_breaks(n=3)) +
+		scale_y_continuous(labels=number_format(accuracy=.1), breaks=pretty_breaks(n=4)) +
+		xlab(x_label) +
+		ylab("Marginal eQTL\neffect size") +
+		figure_theme() +
+		theme(
+			strip.background=element_blank(),
+			strip.text=element_text(face="bold", size=10),
+			# Room between panels so neighboring panels' outer x tick labels do not touch
+			panel.spacing.x=unit(1.1, "lines"),
+			legend.position="right",
+			legend.title=element_text(size=9),
+			legend.text=element_text(size=8),
+			legend.key.height=unit(.9, "lines"),
+			legend.key.width=unit(.5, "lines"),
+			plot.margin=margin(8, 8, 8, 8)
 		)
 	)
 }
@@ -870,28 +1028,104 @@ make_simulation_estimate_bar_plot <- function(summary_df, oracle_df, ylab, bar_c
 	)
 }
 
-load_in_per_tissue_ld_moments <- function(tissue_info_df, ld_moments_output_dir) {
+load_in_per_tissue_ld_moments <- function(tissue_info_df, ld_moments_output_dir, file_suffix="_default_binned_100_ld_moments.txt") {
+	# Load the binned files written by extract_ld_moments.py's create_binned_ld_moment_file for
+	# every tissue into one long df (tissue, avg_ld_moment, avg_std_eqtl_effect_size). file_suffix
+	# selects which binned file: by default the pairs binned on the intercept LD-moment;
+	# "_default_binned_100_causal_borzoi.txt" gives the pairs binned on their own causal Borzoi
+	# effect (avg_ld_moment then holds the bin's average causal Borzoi effect). A tissue whose
+	# file is missing is skipped with a warning.
+	# Also carries the 95% confidence interval of each bin's average eQTL effect (genomic jackknife
+	# over genes, computed by extract_ld_moments.py) as ci_lower/ci_upper; NA for files written
+	# before those columns existed.
 	tiss_arr <- c()
 	ld_moments_arr <- c()
 	std_eqtl_arr <- c()
+	ci_lower_arr <- c()
+	ci_upper_arr <- c()
 	# Loop through tissues
 	for (tiss_iter in 1:nrow(tissue_info_df)) {
 		tissue_name = tissue_info_df$GTEx_tissue[tiss_iter]
 		tissue_sample = tissue_info_df$target_identifier[tiss_iter]
-		ld_moments_file = paste0(ld_moments_output_dir, "ld_moment_results_", tissue_name, "_", tissue_sample, "_default_binned_100_ld_moments.txt")
-		tmp_df = read.table(ld_moments_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+		ld_moments_file = paste0(ld_moments_output_dir, "ld_moment_results_", tissue_name, "_", tissue_sample, file_suffix)
+		if (!file.exists(ld_moments_file)) {
+			print(paste("WARNING: binned file missing, skipping tissue:", ld_moments_file))
+			next
+		}
+		tmp_df = read.table(ld_moments_file, header=TRUE, sep="\t", stringsAsFactors=FALSE, na.strings=c("NA", "nan"))
+		if (all(c("avg_std_eqtl_effect_size_ci_lower", "avg_std_eqtl_effect_size_ci_upper") %in% colnames(tmp_df))) {
+			tmp_ci_lower = tmp_df$avg_std_eqtl_effect_size_ci_lower
+			tmp_ci_upper = tmp_df$avg_std_eqtl_effect_size_ci_upper
+		} else {
+			print(paste("WARNING: no jackknife CI columns in", ld_moments_file, "(re-run extract_ld_moments.py to get them); error bars will be omitted"))
+			tmp_ci_lower = rep(NA_real_, nrow(tmp_df))
+			tmp_ci_upper = rep(NA_real_, nrow(tmp_df))
+		}
 		
 		ld_moments_arr = c(ld_moments_arr, tmp_df$avg_ld_moment)
 		std_eqtl_arr = c(std_eqtl_arr, tmp_df$avg_std_eqtl_effect_size)
+		ci_lower_arr = c(ci_lower_arr, tmp_ci_lower)
+		ci_upper_arr = c(ci_upper_arr, tmp_ci_upper)
 		tiss_arr = c(tiss_arr, rep(tissue_name, nrow(tmp_df)))
 	}
 	df = data.frame(
 		tissue=tiss_arr,
 		avg_ld_moment=ld_moments_arr,
-		avg_std_eqtl_effect_size=std_eqtl_arr
+		avg_std_eqtl_effect_size=std_eqtl_arr,
+		ci_lower=ci_lower_arr,
+		ci_upper=ci_upper_arr
 	)
 	return(df)
 
+}
+
+
+load_in_single_tissue_unbinned_ld_moments <- function(tissue_info_df, ld_moments_output_dir, tissue_name, ld_moment_column_name="interceptXintercept") {
+	# Load the per variant-gene pair (unbinned) LD-moment file written by extract_ld_moments.py for
+	# one tissue. Returns a df with one row per pair: ld_moment (the intercept LD-moment column),
+	# std_eqtl_effect_size, and std_borzoi_effect (the pair's own standardized causal Borzoi effect,
+	# before LD propagation). Files written before that column existed get an all-NA
+	# std_borzoi_effect with a warning. The binned file read by load_in_per_tissue_ld_moments is
+	# derived from this file by extract_ld_moments.py's create_binned_ld_moment_file.
+	tissue_rows = tissue_info_df[tissue_info_df$GTEx_tissue == tissue_name, ]
+	if (nrow(tissue_rows) != 1) {
+		stop(paste("Expected exactly one tissue_info row for", tissue_name, "but found", nrow(tissue_rows)))
+	}
+	tissue_sample = tissue_rows$target_identifier[1]
+	ld_moments_file = paste0(ld_moments_output_dir, "ld_moment_results_", tissue_name, "_", tissue_sample, "_default_ld_moments.txt.gz")
+	# Python writes missing values as "nan"
+	tmp_df = read.table(gzfile(ld_moments_file), header=TRUE, sep="\t", stringsAsFactors=FALSE, na.strings=c("NA", "nan"))
+	if (!(ld_moment_column_name %in% colnames(tmp_df))) {
+		stop(paste("Column", ld_moment_column_name, "not found in", ld_moments_file))
+	}
+	if ("std_borzoi_effect" %in% colnames(tmp_df)) {
+		std_borzoi_effect = tmp_df$std_borzoi_effect
+	} else {
+		print(paste("WARNING: no std_borzoi_effect column in", ld_moments_file, "(re-run extract_ld_moments.py to get it); causal Borzoi effect plots will be skipped"))
+		std_borzoi_effect = rep(NA_real_, nrow(tmp_df))
+	}
+	df = data.frame(
+		ld_moment=tmp_df[[ld_moment_column_name]],
+		std_eqtl_effect_size=tmp_df$std_eqtl_effect_size,
+		std_borzoi_effect=std_borzoi_effect
+	)
+	return(df)
+}
+
+load_in_per_tissue_unbinned_ld_moments <- function(tissue_info_df, ld_moments_output_dir, tissue_names) {
+	# Stack the per variant-gene pair (unbinned) LD-moment files for the given tissues into one long
+	# df with columns tissue, ld_moment, std_eqtl_effect_size, std_borzoi_effect (one row per pair
+	# per tissue). Each
+	# tissue file holds millions of pairs, so this is a large df.
+	df_list = list()
+	for (tissue_name in tissue_names) {
+		tissue_df = load_in_single_tissue_unbinned_ld_moments(tissue_info_df, ld_moments_output_dir, tissue_name)
+		tissue_df$tissue = tissue_name
+		df_list[[tissue_name]] = tissue_df
+	}
+	df = do.call(rbind, df_list)
+	rownames(df) = NULL
+	return(df)
 }
 
 #######################
@@ -1276,6 +1510,67 @@ five_tissue_binned_ld_moment_plot = make_five_tissue_binned_ld_moment_plot(ld_mo
 five_tissue_binned_ld_moment_output_file = paste0(visualization_dir, "ld_moment_five_tissue_binned_eqtl_effect_calibration.pdf")
 ggsave(five_tissue_binned_ld_moment_output_file, five_tissue_binned_ld_moment_plot, width=7.2, height=1.95)
 print(five_tissue_binned_ld_moment_output_file)
+
+
+########################
+# Unbinned intercept LD-moment vs eQTL effect size for a single tissue (Whole Blood): one point per
+# variant-gene pair rather than per bin
+########################
+unbinned_ld_moment_tissue = "Whole_Blood"
+whole_blood_unbinned_ld_moments_df = load_in_single_tissue_unbinned_ld_moments(tissue_info_df, ld_moments_output_dir, unbinned_ld_moment_tissue)
+whole_blood_unbinned_ld_moment_plot = make_single_tissue_unbinned_ld_moment_plot(whole_blood_unbinned_ld_moments_df, unbinned_ld_moment_tissue, five_tissue_colors[[unbinned_ld_moment_tissue]])
+# Saved as a raster PNG rather than a PDF: the density grid renders as thousands of polygons, which
+# makes a vector PDF large and slow to open
+whole_blood_unbinned_ld_moment_output_file = paste0(visualization_dir, "ld_moment_", unbinned_ld_moment_tissue, "_unbinned_eqtl_effect_calibration.png")
+ggsave(whole_blood_unbinned_ld_moment_output_file, whole_blood_unbinned_ld_moment_plot, width=4.6, height=3.8, dpi=300)
+print(whole_blood_unbinned_ld_moment_output_file)
+# Same, but with the pair's own causal Borzoi effect (no LD propagation) on the x-axis. Skipped
+# when the per-pair file predates the std_borzoi_effect column.
+if (any(!is.na(whole_blood_unbinned_ld_moments_df$std_borzoi_effect))) {
+	whole_blood_unbinned_causal_borzoi_plot = make_single_tissue_unbinned_ld_moment_plot(whole_blood_unbinned_ld_moments_df, unbinned_ld_moment_tissue, five_tissue_colors[[unbinned_ld_moment_tissue]], x_variable="std_borzoi_effect", x_label="Causal Borzoi effect size")
+	whole_blood_unbinned_causal_borzoi_output_file = paste0(visualization_dir, "causal_borzoi_", unbinned_ld_moment_tissue, "_unbinned_eqtl_effect_calibration.png")
+	ggsave(whole_blood_unbinned_causal_borzoi_output_file, whole_blood_unbinned_causal_borzoi_plot, width=4.6, height=3.8, dpi=300)
+	print(whole_blood_unbinned_causal_borzoi_output_file)
+} else {
+	print("WARNING: skipping the Whole Blood causal Borzoi effect plot: no std_borzoi_effect values")
+}
+
+########################
+# Unbinned intercept LD-moment vs eQTL effect size for the five tissues side by side (one point per
+# variant-gene pair in each panel)
+########################
+five_tissue_unbinned_ld_moments_df = load_in_per_tissue_unbinned_ld_moments(tissue_info_df, ld_moments_output_dir, names(five_tissue_colors))
+five_tissue_unbinned_ld_moment_plot = make_five_tissue_unbinned_ld_moment_plot(five_tissue_unbinned_ld_moments_df, five_tissue_colors)
+five_tissue_unbinned_ld_moment_output_file = paste0(visualization_dir, "ld_moment_five_tissue_unbinned_eqtl_effect_calibration.png")
+ggsave(five_tissue_unbinned_ld_moment_output_file, five_tissue_unbinned_ld_moment_plot, width=9.0, height=2.4, dpi=300)
+print(five_tissue_unbinned_ld_moment_output_file)
+# Same, but with the pair's own causal Borzoi effect (no LD propagation) on the x-axis. Skipped
+# when the per-pair files predate the std_borzoi_effect column.
+if (any(!is.na(five_tissue_unbinned_ld_moments_df$std_borzoi_effect))) {
+	five_tissue_unbinned_causal_borzoi_plot = make_five_tissue_unbinned_ld_moment_plot(five_tissue_unbinned_ld_moments_df, five_tissue_colors, x_variable="std_borzoi_effect", x_label="Causal Borzoi effect size")
+	five_tissue_unbinned_causal_borzoi_output_file = paste0(visualization_dir, "causal_borzoi_five_tissue_unbinned_eqtl_effect_calibration.png")
+	ggsave(five_tissue_unbinned_causal_borzoi_output_file, five_tissue_unbinned_causal_borzoi_plot, width=9.0, height=2.4, dpi=300)
+	print(five_tissue_unbinned_causal_borzoi_output_file)
+} else {
+	print("WARNING: skipping the five-tissue causal Borzoi effect plot: no std_borzoi_effect values")
+}
+
+
+########################
+# Binned causal Borzoi effect vs average eQTL effect size for the five tissues: the causal-Borzoi
+# analog of the binned LD-moment plot above (one point per bin of variant-gene pairs, binned on the
+# pair's own causal Borzoi effect by extract_ld_moments.py). Skipped when the binned causal files
+# have not been generated yet.
+########################
+binned_causal_borzoi_df = load_in_per_tissue_ld_moments(tissue_info_df, ld_moments_output_dir, file_suffix="_default_binned_100_causal_borzoi.txt")
+if (nrow(binned_causal_borzoi_df) > 0) {
+	five_tissue_binned_causal_borzoi_plot = make_five_tissue_binned_ld_moment_plot(binned_causal_borzoi_df, five_tissue_colors, x_label="Average causal Borzoi effect size")
+	five_tissue_binned_causal_borzoi_output_file = paste0(visualization_dir, "causal_borzoi_five_tissue_binned_eqtl_effect_calibration.pdf")
+	ggsave(five_tissue_binned_causal_borzoi_output_file, five_tissue_binned_causal_borzoi_plot, width=7.2, height=1.95)
+	print(five_tissue_binned_causal_borzoi_output_file)
+} else {
+	print("WARNING: skipping the five-tissue binned causal Borzoi effect plot: no binned causal Borzoi files found (re-run extract_ld_moments.py to get them)")
+}
 
 
 
