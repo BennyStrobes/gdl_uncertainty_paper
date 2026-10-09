@@ -47,6 +47,7 @@ Two models for $\sigma_j^2$, giving the `_af_specific` twins of some columns:
 | `rescaled_predicted_expression_variance` | $V = \operatorname{Var}_i(p_i) = \mu^\top R \mu$, in-sample variance of the rescaled prediction |
 | `predicted_cis_snp_h2` (and `_af_specific`) | $h^2_{\text{pred}} = \mathbb{E}[\operatorname{Var}_i(X\beta)] = V + \sum_j \sigma_j^2$ |
 | `cis_snp_h2_he` | $\hat h^2$, Haseman-Elston estimate of the cis-SNP heritability of $y$ (unbiased, can be negative) |
+| `predicted_r_variance` (and `_af_specific`) | $\operatorname{Var}(\rho(\beta)) = \mu^\top R D R \mu / V$, spread of the realizable correlation around $\sqrt{V}$ (see the uncertainty section) |
 
 ## Two useful identities
 
@@ -358,6 +359,144 @@ $$
 
 where the variances and covariance of the bin means are the gene-level sample variances and covariance divided by $n_b$.
 A bin with $\bar h^2_b \le 0$ gets no point.
+
+## Uncertainty in the predicted correlation
+
+$r_{\text{pred}} = \sqrt{V}$ is an expectation. For a single gene the realizable correlation differs from it because the
+true effects are not exactly the rescaled Borzoi effects. This section defines that spread. It uses
+
+$$
+D = \operatorname{diag}(\sigma_1^2, \dots, \sigma_m^2),
+$$
+
+the covariance of the true effects around $\mu$ under the model $\beta \sim N(\mu, D)$: diagonal because the residuals
+are assumed independent across variants, with $\sigma_j^2$ from whichever residual-variance model is in use.
+
+**Setup.** Write $\beta = \mu + \delta$ with $\delta \sim N(0, D)$. The large-sample correlation of the prediction with
+the true genetic expression (no environmental noise, so this is the best the prediction could ever do for this gene) is
+
+$$
+\rho(\beta) := \frac{\operatorname{Cov}_i(p, X\beta)}{\sqrt{\operatorname{Var}_i(p)\,\operatorname{Var}_i(y)}}
+= \frac{\mu^\top R\,\beta}{\sqrt{V}} ,
+$$
+
+using 8.2, 8.6 and $\operatorname{Var}_i(y) = 1$.
+
+**Step 1. Split into predicted part and random part.** Substitute $\beta = \mu + \delta$:
+
+$$
+\rho(\beta) = \frac{\mu^\top R\,\mu}{\sqrt{V}} + \frac{\mu^\top R\,\delta}{\sqrt{V}}
+= \sqrt{V} + \frac{\mu^\top R\,\delta}{\sqrt{V}} .
+$$
+
+The first term is $r_{\text{pred}}$. The second has mean 0 because $\mathbb{E}[\delta] = 0$, which recovers step 8.
+
+**Step 2. Variance of the random part.** $\mu^\top R\,\delta$ is a fixed vector $a^\top = \mu^\top R$ times $\delta$, so
+
+$$
+\operatorname{Var}(\mu^\top R\,\delta) = a^\top D\, a = \mu^\top R\, D\, R\, \mu ,
+$$
+
+and therefore
+
+$$
+\operatorname{Var}\big(\rho(\beta)\big) = \frac{\mu^\top R\, D\, R\, \mu}{V} .
+$$
+
+This is the column `predicted_r_variance` (constant-within-bin $D$) and `predicted_r_variance_af_specific`
+(allele-frequency-specific $D$). It is computed as $\sum_j (a_j \sigma_j)^2 / V$ with $a = R\mu = X^\top p / n$, which
+avoids forming $R$.
+
+**What it represents.** The spread of a gene's true predictability around $r_{\text{pred}}$, driven only by uncertainty
+about which variants truly do what. Two genes with the same $\sqrt{V}$ can differ here: one with small $\sigma_j^2$ has its
+predictability nearly pinned down, one with large $\sigma_j^2$ could turn out much better or much worse than predicted.
+It does not shrink with the number of individuals, since it concerns the effects, not sampling.
+
+**Relation to the FSR.** The FSR is $\Pr(\rho(\beta) < 0)$. Under the normal model that is
+$\Phi\!\big(-\sqrt{V} \,/\, \sqrt{\mu^\top R D R \mu / V}\big) = \Phi\!\big(-V / \sqrt{\mu^\top R D R \mu}\big)$, so the FSR
+is one tail of this same distribution. The script computes it by Monte Carlo instead of this closed form.
+
+**Adding sampling noise.** The *observed* correlation $r_{\text{obs}}$ in $n$ individuals also carries the sampling noise of
+$\varepsilon$. Treating the denominator as fixed,
+
+$$
+\operatorname{Var}(r_{\text{obs}}) \approx \frac{\mu^\top R\, D\, R\, \mu}{V} + \frac{1 - h^2_{\text{pred}}}{n} .
+$$
+
+The first term is the one above and does not shrink with $n$; the second does. A predicted interval for $r_{\text{obs}}$
+built from these two terms (or from Monte Carlo draws of $\beta$ and $\varepsilon$) can be checked against the realized
+$r_{\text{obs}}$ by coverage.
+
+**Not covered here.** Uncertainty in $r_{\text{pred}}$ from the estimated S-LDMC slopes $s_c$. $V$ is a quadratic form
+in the slope vector, $V = s^\top Q\, s$ with $Q_{cc'} = b_c^\top R\, b_{c'}$ and $b_c$ the Borzoi effects restricted to bin
+$c$, so it can be propagated by the delta method or by recomputing $V$ over the S-LDMC bootstrap replicates.
+
+## Plot 3: coverage of predicted intervals for the observed correlation
+
+Files: `five_tissue_predicted_r_variance_interval_coverage_per_tissue_panels*.pdf` and the `_af_specific` version.
+
+**Predicted interval, per gene.** Combine the two variance terms from the section above into a normal interval for
+$r_{\text{obs}}$:
+
+$$
+r_{\text{pred}} \pm z_{\alpha}\sqrt{\operatorname{Var}_{\text{total}}},
+\qquad
+\operatorname{Var}_{\text{total}} = \underbrace{\operatorname{Var}\big(\rho(\beta)\big)}_{\texttt{predicted\_r\_variance}}
+\;+\; \underbrace{\frac{1 - h^2_{\text{pred}}}{n}}_{\text{sampling}},
+$$
+
+with $z_\alpha$ the normal quantile for nominal level $\alpha \in \{0.80, 0.90, 0.95, 0.99\}$ and $n$ the number of
+individuals (`n_samples`). The predicted $h^2$ matches the residual-variance model of $\operatorname{Var}(\rho)$.
+
+**Comparison interval.** The same thing with the first term dropped, "sampling only". It is what one would use if the
+rescaled Borzoi effects were taken as exactly right.
+
+**Empirical coverage, per tissue and level.** The fraction of genes with
+$|r_{\text{obs}} - r_{\text{pred}}| \le z_\alpha \sqrt{\operatorname{Var}_{\text{total}}}$, with a binomial 95% interval
+$\pm 1.96\sqrt{c(1-c)/N}$ over the $N$ genes.
+
+**Plot.** One panel per tissue; nominal level on the x-axis, empirical coverage on the y-axis; filled points joined by a
+solid line for the full interval, open points joined by a dotted line for sampling only; dashed $y = x$.
+
+**Reading it.** The full interval on $y = x$ means the spread of observed correlations around the prediction is as the
+model says. The vertical gap between the two series at each level is the share of that spread attributable to
+uncertainty about the true effects, i.e. the information carried by $\operatorname{Var}(\rho)$. Points below the line
+indicate overdispersion (intervals too narrow), above it overconfidence in the other direction.
+
+## Plot 4: mean observed correlation of the top N genes under each gene ranking
+
+Files: `five_tissue_top_n_genes_mean_observed_r_per_tissue_panels*.pdf` and the `_af_specific` version.
+
+**Question.** If one had to pick $N$ genes whose personalized expression prediction will work best, which score should
+one rank on? The outcome is the realized $r_{\text{obs}}$ of the chosen genes.
+
+**Construction, per tissue and ranking.** Sort genes by decreasing score, then for every $N$ from 10 to the number of
+genes plot the running mean $\frac{1}{N}\sum_{\text{top } N} r_{\text{obs}}$ against $N$ on a log scale. All rankings
+meet at $N$ = all genes. A ranking is better where its curve is higher.
+
+**Rankings.**
+
+| Ranking | Score | Uses |
+|---|---|---|
+| Predicted r | $\sqrt{V}$ | calibration slopes |
+| Predicted r $-$ 1 SD | $\sqrt{V} - \sqrt{\operatorname{Var}(\rho) + (1-h^2_{\text{pred}})/n}$ | slopes + residual variances |
+| Predicted r $-$ 2 SD | $\sqrt{V} - 2\sqrt{\operatorname{Var}(\rho) + (1-h^2_{\text{pred}})/n}$ | slopes + residual variances |
+| Predicted r with genetic expression | $\sqrt{V / h^2_{\text{pred}}}$ | slopes + residual variances |
+| Predicted cis-SNP h2 | $h^2_{\text{pred}}$ | slopes + residual variances |
+| 1 $-$ expression FSR | $1 - \text{FSR}$ | slopes + residual variances (Monte Carlo) |
+| Uncalibrated predicted r | $\sqrt{\operatorname{Var}_i(Xb)}$, raw Borzoi effects $b$ in place of $\mu$ | Borzoi only |
+| Largest \|Borzoi effect\| | $\max_j \lvert b_j^{\text{raw}} \rvert$ | Borzoi only |
+| Mean \|Borzoi effect\| | $\frac{1}{m}\sum_j \lvert b_j^{\text{raw}} \rvert$ | Borzoi only |
+
+The "$-$ k SD" rankings penalize genes whose predicted correlation is uncertain (section "Uncertainty in the predicted
+correlation"); the SD is the same total standard deviation used for the coverage plot. The last three are baselines
+that ignore the S-LDMC calibration; they are the per-gene analogs of the "largest $|\delta|$" and "mean $|\delta|$"
+rankings. The model-dependent scores use the columns of the residual-variance model named in the file name.
+
+**Reading it.** The gap between "Predicted r" and the uncalibrated baselines is the value of calibration for gene
+selection. The gap between "Predicted r" and "Predicted r $-$ 1 SD" is the value of the uncertainty estimate: if the
+penalized ranking is higher at small $N$, genes with confidently predicted correlations deliver more reliably than genes
+with merely high expected correlations.
 
 ## How the two plots relate
 

@@ -334,6 +334,19 @@ def compute_directional_fsr(genotype_mat, rescaled_pred_expr, per_snp_mu, per_sn
 	return directional_fsr
 
 
+def compute_predicted_correlation_variance(genotype_mat, rescaled_pred_expr, per_snp_sd, rescaled_pred_expr_variance):
+	# Variance of the realizable (large-sample, noise-free) correlation between the rescaled prediction p = X mu
+	# and the true genetic expression X beta, over beta ~ N(mu, D) with D = diag(sd_j^2):
+	#   rho(beta) = mu^T R beta / sqrt(V) = sqrt(V) + mu^T R delta / sqrt(V),  delta ~ N(0, D), V = Var_i(p) = mu^T R mu
+	#   Var(rho) = mu^T R D R mu / V
+	# with R = X^T X / n the in-sample LD. Using R mu = X^T p / n, the quadratic form is sum_j (a_j sd_j)^2 with a = X^T p / n.
+	# This is the spread of a gene's true predictability around its predicted value sqrt(V) (see
+	# predicted_expression_correlation_plots.md); it does not shrink with sample size.
+	n_indi = genotype_mat.shape[0]
+	a = np.dot(np.transpose(genotype_mat), rescaled_pred_expr)/n_indi
+	return np.sum(np.square(a*per_snp_sd))/rescaled_pred_expr_variance
+
+
 def compute_predicted_cis_snp_heritability(rescaled_pred_expr, per_snp_sd):
 	# Predicted (expected) cis-SNP heritability of expression given the rescaled borzoi predictions:
 	# E[Var_i(X beta) | borzoi] with beta_j ~ N(mu_j, sd_j^2) independently per snp and X standardized in sample
@@ -413,7 +426,7 @@ def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genoty
 def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, output_file):
 	# Initialize output file
 	t = open(output_file,'w')
-	t.write('gene_id\traw_expression_correlation\trescaled_expression_correlation\texpression_FSR\texpression_FSR_af_specific\tcis_snp_h2\tcis_snp_h2_pvalue\tcis_snp_h2_he\tcis_snp_h2_he_se\tpredicted_cis_snp_h2\tpredicted_cis_snp_h2_af_specific\trescaled_predicted_expression_variance\n')
+	t.write('gene_id\traw_expression_correlation\trescaled_expression_correlation\texpression_FSR\texpression_FSR_af_specific\tcis_snp_h2\tcis_snp_h2_pvalue\tcis_snp_h2_he\tcis_snp_h2_he_se\tpredicted_cis_snp_h2\tpredicted_cis_snp_h2_af_specific\trescaled_predicted_expression_variance\tpredicted_r_variance\tpredicted_r_variance_af_specific\tn_samples\tn_cis_variants\traw_predicted_expression_variance\tmax_abs_borzoi_effect\tmean_abs_borzoi_effect\n')
 
 	n_genes_analyzed = 0
 
@@ -494,6 +507,12 @@ def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_i
 			# Raw prediction: X beta_borzoi
 			raw_pred_expr = np.dot(genotype_mat, borzoi_vec)
 			raw_corry = np.corrcoef(expr_vec, raw_pred_expr)[0,1]
+			# Gene-ranking baselines that ignore the S-LDMC calibration: in-sample variance of the raw prediction
+			# (the uncalibrated analog of rescaled_predicted_expression_variance) and the largest / mean
+			# |borzoi effect| (per allele, unstandardized) over the gene's usable cis variants
+			raw_pred_expr_variance = np.var(raw_pred_expr)
+			max_abs_borzoi_effect = np.max(np.abs(borzoi_vec_unstandardized))
+			mean_abs_borzoi_effect = np.mean(np.abs(borzoi_vec_unstandardized))
 
 			# Rescaled prediction: X (slope_bin * beta_borzoi), bins assigned on |unstandardized borzoi|
 			bin_indices = assign_finer_magnitude_bins(borzoi_vec_unstandardized, finer_borzoi_magnitude_bins)
@@ -518,6 +537,13 @@ def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_i
 			# expression variance captured by the point prediction); the denominator is written out below.
 			rescaled_pred_expr_variance = np.var(rescaled_pred_expr)
 
+			# Variance of the realizable correlation around its predicted value sqrt(Var_i(X mu)), under each residual-variance model
+			predicted_r_variance = compute_predicted_correlation_variance(genotype_mat, rescaled_pred_expr, per_snp_sd, rescaled_pred_expr_variance)
+			if np.all(np.isfinite(per_snp_sd_af_specific)):
+				predicted_r_variance_af_specific = compute_predicted_correlation_variance(genotype_mat, rescaled_pred_expr, per_snp_sd_af_specific, rescaled_pred_expr_variance)
+			else:
+				predicted_r_variance_af_specific = np.nan
+
 			# Predicted cis-SNP heritability given the rescaled borzoi predictions, under each residual-variance model
 			predicted_cis_snp_h2 = compute_predicted_cis_snp_heritability(rescaled_pred_expr, per_snp_sd)
 			if np.all(np.isfinite(per_snp_sd_af_specific)):
@@ -530,7 +556,7 @@ def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_i
 			# Haseman-Elston regression estimate (unbounded, can be negative) with analytic standard error
 			cis_snp_h2_he, cis_snp_h2_he_se = estimate_cis_snp_heritability_with_he_regression(genotype_mat, expr_vec)
 
-			t.write(gene_id + '\t' + str(raw_corry) + '\t' + str(rescaled_corry) + '\t' + str(expression_fsr) + '\t' + str(expression_fsr_af_specific) + '\t' + str(cis_snp_h2) + '\t' + str(cis_snp_h2_pvalue) + '\t' + str(cis_snp_h2_he) + '\t' + str(cis_snp_h2_he_se) + '\t' + str(predicted_cis_snp_h2) + '\t' + str(predicted_cis_snp_h2_af_specific) + '\t' + str(rescaled_pred_expr_variance) + '\n')
+			t.write(gene_id + '\t' + str(raw_corry) + '\t' + str(rescaled_corry) + '\t' + str(expression_fsr) + '\t' + str(expression_fsr_af_specific) + '\t' + str(cis_snp_h2) + '\t' + str(cis_snp_h2_pvalue) + '\t' + str(cis_snp_h2_he) + '\t' + str(cis_snp_h2_he_se) + '\t' + str(predicted_cis_snp_h2) + '\t' + str(predicted_cis_snp_h2_af_specific) + '\t' + str(rescaled_pred_expr_variance) + '\t' + str(predicted_r_variance) + '\t' + str(predicted_r_variance_af_specific) + '\t' + str(genotype_mat.shape[0]) + '\t' + str(genotype_mat.shape[1]) + '\t' + str(raw_pred_expr_variance) + '\t' + str(max_abs_borzoi_effect) + '\t' + str(mean_abs_borzoi_effect) + '\n')
 			t.flush()
 			n_genes_analyzed = n_genes_analyzed + 1
 

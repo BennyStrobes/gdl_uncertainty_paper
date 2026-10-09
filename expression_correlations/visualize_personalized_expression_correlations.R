@@ -31,6 +31,15 @@ h2_scatter_tissue = "Whole_Blood"
 # Number of equal-count bins of predicted expression correlation (per tissue) in the correlation calibration plots
 predicted_r_n_bins = 10
 
+# Nominal levels of the predicted intervals for the observed expression correlation in the coverage plot
+coverage_levels = c(0.80, 0.90, 0.95, 0.99)
+
+# Smallest N shown in the top-N-genes plot (mean observed correlation of the top N genes under each ranking)
+top_n_min_genes = 10
+
+# Rankings left out of the reduced top-N-genes plot (file name suffix "_main_rankings")
+top_n_excluded_rankings = c("Predicted r - 1 SD", "Predicted r - 2 SD", "Uncalibrated predicted r")
+
 
 read_per_tissue_expression_correlation_file <- function(results_file) {
 	# Read one per-gene output file, skipping (with a warning) any line that does not have the header's
@@ -577,6 +586,244 @@ make_per_tissue_predicted_vs_observed_r_panel_plot <- function(summary_df, tissu
 
 
 
+compute_predicted_r_coverage_summary_df <- function(df, predicted_r_variance_col, coverage_levels, tissue_colors) {
+	# Coverage of normal predicted intervals for the observed expression correlation (see
+	# predicted_expression_correlation_plots.md, "Uncertainty in the predicted correlation"). Per gene,
+	#   r_obs ~ N(r_pred, Var_total),  r_pred = sqrt(V),
+	# with Var_total built two ways:
+	#   "Effect uncertainty + sampling": Var(rho) + (1 - predicted h2)/n   (predicted_r_variance_col is Var(rho))
+	#   "Sampling only":                 (1 - predicted h2)/n
+	# The predicted h2 is the one matching the residual-variance model of predicted_r_variance_col. One row per
+	# (tissue, interval definition, nominal level): the fraction of genes whose r_obs falls inside
+	# r_pred +/- z*sqrt(Var_total), with a binomial SE.
+	if (predicted_r_variance_col == "predicted_r_variance") {
+		predicted_h2_col = "predicted_cis_snp_h2"
+	} else if (predicted_r_variance_col == "predicted_r_variance_af_specific") {
+		predicted_h2_col = "predicted_cis_snp_h2_af_specific"
+	} else {
+		stop(paste("Unknown predicted r variance column:", predicted_r_variance_col))
+	}
+	df = df[df$target_tissue %in% names(tissue_colors), ]
+	df = df[!is.na(df$predicted_expression_r) & !is.na(df[[observed_r_col]]) & !is.na(df[[predicted_r_variance_col]]) & !is.na(df[[predicted_h2_col]]) & !is.na(df$n_samples), ]
+
+	sampling_var = pmax(1.0 - df[[predicted_h2_col]], 0.0)/df$n_samples
+	total_vars = list(
+		"Effect uncertainty + sampling"=df[[predicted_r_variance_col]] + sampling_var,
+		"Sampling only"=sampling_var
+	)
+	residual = df[[observed_r_col]] - df$predicted_expression_r
+
+	tissue_arr = c()
+	definition_arr = c()
+	level_arr = c()
+	n_gene_arr = c()
+	coverage_arr = c()
+	coverage_se_arr = c()
+	for (target_tissue in names(tissue_colors)) {
+		tissue_indices = df$target_tissue == target_tissue
+		n_genes = sum(tissue_indices)
+		if (n_genes == 0) {
+			next
+		}
+		for (definition in names(total_vars)) {
+			predicted_sd = sqrt(total_vars[[definition]][tissue_indices])
+			for (level in coverage_levels) {
+				z = qnorm(1.0 - (1.0 - level)/2.0)
+				covered = abs(residual[tissue_indices]) <= z*predicted_sd
+				coverage = mean(covered)
+				tissue_arr = c(tissue_arr, target_tissue)
+				definition_arr = c(definition_arr, definition)
+				level_arr = c(level_arr, level)
+				n_gene_arr = c(n_gene_arr, n_genes)
+				coverage_arr = c(coverage_arr, coverage)
+				coverage_se_arr = c(coverage_se_arr, sqrt(coverage*(1.0 - coverage)/n_genes))
+			}
+		}
+	}
+	summary_df = data.frame(
+		target_tissue=as.character(tissue_arr),
+		interval_definition=factor(definition_arr, levels=names(total_vars)),
+		nominal_coverage=as.numeric(level_arr),
+		n_genes=as.integer(n_gene_arr),
+		empirical_coverage=as.numeric(coverage_arr),
+		empirical_coverage_se=as.numeric(coverage_se_arr)
+	)
+	tissue_levels = names(tissue_colors)
+	summary_df$tissue = factor(summary_df$target_tissue, levels=tissue_levels, labels=gsub("_", " ", tissue_levels))
+	return(summary_df)
+}
+
+
+make_per_tissue_predicted_r_coverage_panel_plot <- function(summary_df, tissue_colors, xlab, ylab) {
+	# Coverage plot with one panel per tissue (side by side): empirical coverage (points with 95% binomial
+	# CI, joined by a line, colored by tissue) of the predicted interval for the observed expression
+	# correlation against its nominal level, for each interval definition (shape / linetype). The dashed
+	# line is y = x. Each panel is annotated with that tissue's gene count.
+	reference_color = "#3F3F46"
+	tissue_colors_use = setNames(as.character(tissue_colors), gsub("_", " ", names(tissue_colors)))
+	definition_levels = levels(summary_df$interval_definition)
+	definition_shapes = setNames(c(16, 1)[seq_along(definition_levels)], definition_levels)
+	definition_linetypes = setNames(c("solid", "dotted")[seq_along(definition_levels)], definition_levels)
+
+	n_gene_df = aggregate(n_genes ~ tissue, data=summary_df, FUN=max)
+	n_gene_df$n_label = paste0("N=", n_gene_df$n_genes, " genes")
+
+	summary_df$coverage_lb = pmax(summary_df$empirical_coverage - 1.96*summary_df$empirical_coverage_se, 0.0)
+	summary_df$coverage_ub = pmin(summary_df$empirical_coverage + 1.96*summary_df$empirical_coverage_se, 1.0)
+
+	pp = ggplot(summary_df, aes(x=nominal_coverage, y=empirical_coverage, color=tissue, shape=interval_definition, linetype=interval_definition)) +
+		geom_abline(slope=1, intercept=0, color=reference_color, linetype="dashed", linewidth=0.6) +
+		geom_line(linewidth=0.7, na.rm=TRUE) +
+		geom_linerange(aes(ymin=coverage_lb, ymax=coverage_ub), linetype="solid", linewidth=0.6, na.rm=TRUE) +
+		geom_point(size=2.4, na.rm=TRUE) +
+		geom_text(data=n_gene_df, aes(x=-Inf, y=Inf, label=n_label), color=reference_color, size=2.6, hjust=-0.1, vjust=1.6, inherit.aes=FALSE) +
+		facet_wrap(~tissue, nrow=1) +
+		scale_color_manual(values=tissue_colors_use, guide="none") +
+		scale_shape_manual(values=definition_shapes, name="Predicted interval") +
+		scale_linetype_manual(values=definition_linetypes, name="Predicted interval") +
+		scale_x_continuous(breaks=coverage_levels, labels=paste0(100*coverage_levels, "%"), limits=c(min(coverage_levels) - 0.05, 1.0)) +
+		scale_y_continuous(limits=c(0.0, 1.0)) +
+		figure_theme() +
+		theme(
+			legend.position="bottom",
+			legend.key=element_blank(),
+			legend.margin=margin(0, 0, 0, 0),
+			strip.background=element_blank(),
+			strip.text=element_text(face="bold", size=11),
+			panel.spacing=unit(0.8, "lines"),
+			axis.text.x=element_text(size=9)
+		) +
+		labs(x=xlab, y=ylab)
+	return(pp)
+}
+
+
+
+get_gene_ranking_scores <- function(df, model_suffix) {
+	# Per-gene scores for ranking genes by how well their personalized expression prediction is expected to
+	# work. Higher score = ranked earlier. model_suffix is "" (residual variance constant within borzoi
+	# magnitude bin) or "_af_specific" (allele-frequency-specific residual variance) and selects the
+	# corresponding columns for the model-dependent scores. Returns a named list of numeric vectors.
+	predicted_h2 = df[[paste0("predicted_cis_snp_h2", model_suffix)]]
+	predicted_r_variance = df[[paste0("predicted_r_variance", model_suffix)]]
+	expression_fsr = df[[paste0("expression_FSR", model_suffix)]]
+	# Total predicted variance of the observed correlation: effect uncertainty + sampling noise (as in the coverage plot)
+	predicted_r_total_sd = sqrt(predicted_r_variance + pmax(1.0 - predicted_h2, 0.0)/df$n_samples)
+	scores = list(
+		"Predicted r"=df$predicted_expression_r,
+		"Predicted r - 1 SD"=df$predicted_expression_r - predicted_r_total_sd,
+		"Predicted r - 2 SD"=df$predicted_expression_r - 2.0*predicted_r_total_sd,
+		"Predicted r with genetic expression"=sqrt(df$rescaled_predicted_expression_variance/predicted_h2),
+		"Predicted cis-SNP h2"=predicted_h2,
+		"1 - expression FSR"=1.0 - expression_fsr,
+		"Uncalibrated predicted r"=sqrt(df$raw_predicted_expression_variance),
+		"Largest |borzoi effect|"=df$max_abs_borzoi_effect,
+		"Mean |borzoi effect|"=df$mean_abs_borzoi_effect
+	)
+	return(scores)
+}
+
+
+compute_top_n_mean_observed_r_df <- function(df, model_suffix, observed_r_col, min_genes, tissue_colors) {
+	# For each tissue and each ranking score (get_gene_ranking_scores), sort genes by decreasing score and
+	# record the running mean of the observed expression correlation over the top N genes, for every N from
+	# min_genes to the number of genes. Genes missing the observed correlation are dropped; a gene missing a
+	# given score is dropped for that ranking only. One row per (tissue, ranking, N).
+	df = df[df$target_tissue %in% names(tissue_colors) & !is.na(df[[observed_r_col]]), ]
+
+	tissue_arr = c()
+	ranking_arr = c()
+	top_n_arr = c()
+	mean_r_arr = c()
+	for (target_tissue in names(tissue_colors)) {
+		tissue_df = df[df$target_tissue == target_tissue, ]
+		if (nrow(tissue_df) < min_genes) {
+			next
+		}
+		scores = get_gene_ranking_scores(tissue_df, model_suffix)
+		for (ranking in names(scores)) {
+			score = scores[[ranking]]
+			valid = !is.na(score)
+			if (sum(valid) < min_genes) {
+				print(paste("WARNING:", target_tissue, ranking, ": fewer than", min_genes, "genes with a score; skipping this ranking"))
+				next
+			}
+			ordering = order(score[valid], decreasing=TRUE)
+			running_mean = cumsum(tissue_df[[observed_r_col]][valid][ordering])/seq_len(sum(valid))
+			top_n = seq_len(sum(valid))
+			keep = top_n >= min_genes
+			tissue_arr = c(tissue_arr, rep(target_tissue, sum(keep)))
+			ranking_arr = c(ranking_arr, rep(ranking, sum(keep)))
+			top_n_arr = c(top_n_arr, top_n[keep])
+			mean_r_arr = c(mean_r_arr, running_mean[keep])
+		}
+	}
+	summary_df = data.frame(
+		target_tissue=as.character(tissue_arr),
+		ranking=factor(ranking_arr, levels=names(get_gene_ranking_scores(df[seq_len(min(nrow(df), 1)), ], model_suffix))),
+		top_n=as.integer(top_n_arr),
+		mean_observed_r=as.numeric(mean_r_arr)
+	)
+	tissue_levels = names(tissue_colors)
+	summary_df$tissue = factor(summary_df$target_tissue, levels=tissue_levels, labels=gsub("_", " ", tissue_levels))
+	return(summary_df)
+}
+
+
+make_per_tissue_top_n_mean_observed_r_panel_plot <- function(summary_df, xlab, ylab) {
+	# Top-N-genes plot with one panel per tissue (side by side): mean observed expression correlation of the
+	# top N genes (y) against N on a log scale (x), one line per gene ranking. All rankings meet at N = all genes.
+	# Colors keyed by ranking name so they are stable across plots that show different subsets of the rankings
+	ranking_colors_all = c(
+		"Predicted r"="#B91C1C",
+		"Predicted r - 1 SD"="#F97316",
+		"Predicted r - 2 SD"="#FBBF24",
+		"Predicted r with genetic expression"="#2563EB",
+		"Predicted cis-SNP h2"="#0891B2",
+		"1 - expression FSR"="#7C3AED",
+		"Uncalibrated predicted r"="#6B7280",
+		"Largest |borzoi effect|"="#A16207",
+		"Mean |borzoi effect|"="#111827"
+	)
+	summary_df$ranking = droplevels(summary_df$ranking)
+	ranking_levels = levels(summary_df$ranking)
+	unknown_rankings = setdiff(ranking_levels, names(ranking_colors_all))
+	if (length(unknown_rankings) > 0) {
+		stop(paste("No color defined for ranking(s):", paste(unknown_rankings, collapse=", ")))
+	}
+	ranking_colors = ranking_colors_all[ranking_levels]
+	# The prediction-based rankings of main interest are drawn thicker
+	ranking_linewidths = setNames(rep(0.55, length(ranking_levels)), ranking_levels)
+	ranking_linewidths[intersect(c("Predicted r", "Predicted r - 1 SD"), ranking_levels)] = 0.95
+
+	n_gene_df = aggregate(top_n ~ tissue, data=summary_df, FUN=max)
+	n_gene_df$n_label = paste0("N=", n_gene_df$top_n, " genes")
+	reference_color = "#3F3F46"
+
+	pp = ggplot(summary_df, aes(x=top_n, y=mean_observed_r, color=ranking, linewidth=ranking)) +
+		geom_line(na.rm=TRUE) +
+		geom_text(data=n_gene_df, aes(x=Inf, y=Inf, label=n_label), color=reference_color, size=2.6, hjust=1.1, vjust=1.6, inherit.aes=FALSE) +
+		facet_wrap(~tissue, nrow=1) +
+		scale_color_manual(values=ranking_colors, name="Gene ranking") +
+		scale_linewidth_manual(values=ranking_linewidths, guide="none") +
+		scale_x_log10(breaks=c(10, 100, 1000, 10000), labels=c("10", "100", "1,000", "10,000")) +
+		figure_theme() +
+		theme(
+			legend.position="bottom",
+			legend.key=element_blank(),
+			legend.margin=margin(0, 0, 0, 0),
+			strip.background=element_blank(),
+			strip.text=element_text(face="bold", size=11),
+			panel.spacing=unit(0.8, "lines"),
+			axis.text.x=element_text(size=9)
+		) +
+		guides(color=guide_legend(nrow=ceiling(length(ranking_levels)/3), override.aes=list(linewidth=1.0))) +
+		labs(x=xlab, y=ylab)
+	return(pp)
+}
+
+
+
 
 
 #####################
@@ -603,6 +850,18 @@ if (has_predicted_expression_correlation) {
 	results_df = add_predicted_expression_correlation_columns(results_df)
 } else {
 	print("WARNING: rescaled_predicted_expression_variance column not found in the per-tissue results; skipping the predicted expression correlation plots (rerun personalized_expression_correlations_per_tissue.py)")
+}
+# Coverage of predicted intervals for the observed correlation additionally needs Var(rho) and the sample size
+coverage_required_cols = c("predicted_r_variance", "predicted_r_variance_af_specific", "n_samples")
+has_predicted_r_coverage = has_predicted_expression_correlation && all(coverage_required_cols %in% colnames(results_df))
+if (has_predicted_r_coverage == FALSE) {
+	print("WARNING: predicted_r_variance / n_samples columns not found in the per-tissue results; skipping the predicted interval coverage plots (rerun personalized_expression_correlations_per_tissue.py)")
+}
+# The top-N-genes ranking plot additionally needs the uncalibrated-prediction baselines
+ranking_required_cols = c("raw_predicted_expression_variance", "max_abs_borzoi_effect", "mean_abs_borzoi_effect")
+has_gene_ranking = has_predicted_r_coverage && all(ranking_required_cols %in% colnames(results_df))
+if (has_gene_ranking == FALSE) {
+	print("WARNING: raw_predicted_expression_variance / max_abs_borzoi_effect / mean_abs_borzoi_effect columns not found in the per-tissue results; skipping the top-N-genes ranking plots (rerun personalized_expression_correlations_per_tissue.py)")
 }
 
 # Restrict to heritable genes
@@ -655,6 +914,16 @@ predicted_genetic_r_definitions = c("predicted_genetic_r"="Predicted r with gene
 observed_genetic_r_ylab = "Observed r / sqrt(observed cis-SNP h2)"
 predicted_expression_r_xlab = "Predicted r with observed expression"
 observed_expression_r_ylab = "Observed r with observed expression"
+
+# Coverage of predicted intervals for the observed expression correlation, once per residual-variance model of Var(rho)
+predicted_r_variance_definitions = c("predicted_r_variance", "predicted_r_variance_af_specific")
+coverage_xlab = "Nominal coverage of predicted interval for observed r"
+coverage_ylab = "Empirical coverage (fraction of genes)"
+
+# Top-N-genes plot, once per residual-variance model (the suffix selects the model-dependent ranking scores)
+ranking_model_suffixes = c("", "_af_specific")
+top_n_xlab = "Top N genes"
+top_n_ylab = "Mean observed r of top N genes"
 if (h2_scatter_tissue %in% names(five_tissue_colors)) {
 	h2_scatter_point_color = five_tissue_colors[[h2_scatter_tissue]]
 } else {
@@ -752,6 +1021,49 @@ for (gene_set_name in names(gene_sets)) {
 		} else {
 			per_tissue_r_calibration_plot = make_per_tissue_predicted_vs_observed_r_panel_plot(r_summary_df, five_tissue_colors, predicted_expression_r_xlab, observed_expression_r_ylab)
 			ggsave(paste0(visualization_dir, "five_tissue_predicted_expression_r_calibration_per_tissue_panels", file_suffix, ".pdf"), per_tissue_r_calibration_plot, width=9.5, height=2.9)
+		}
+	}
+
+	#####################
+	# Coverage of the predicted intervals for the observed expression correlation, once per residual-variance
+	# model of Var(rho): r_obs within sqrt(V) +/- z*sqrt(Var(rho) + (1 - predicted h2)/n) at each nominal level,
+	# alongside the sampling-only interval (no Var(rho)) to show what the effect-uncertainty term adds
+	#####################
+	if (has_predicted_r_coverage) {
+		for (predicted_r_variance_col in predicted_r_variance_definitions) {
+			print(paste("Plotting predicted interval coverage with", predicted_r_variance_col, "for", gene_set_name, "(", nrow(gene_set_df), "genes )"))
+			coverage_summary_df = compute_predicted_r_coverage_summary_df(gene_set_df, predicted_r_variance_col, coverage_levels, five_tissue_colors)
+			print(coverage_summary_df)
+			write.table(coverage_summary_df, paste0(visualization_dir, "five_tissue_", predicted_r_variance_col, "_interval_coverage_summary", file_suffix, ".txt"), quote=FALSE, sep="\t", row.names=FALSE)
+			if (nrow(coverage_summary_df) == 0) {
+				print(paste("WARNING: no genes with the columns needed for", predicted_r_variance_col, "interval coverage; skipping the coverage plot"))
+			} else {
+				coverage_plot = make_per_tissue_predicted_r_coverage_panel_plot(coverage_summary_df, five_tissue_colors, coverage_xlab, coverage_ylab)
+				ggsave(paste0(visualization_dir, "five_tissue_", predicted_r_variance_col, "_interval_coverage_per_tissue_panels", file_suffix, ".pdf"), coverage_plot, width=9.5, height=3.4)
+			}
+		}
+	}
+
+	#####################
+	# Top-N-genes plot: mean observed expression correlation of the top N genes under each gene ranking
+	# (get_gene_ranking_scores), once per residual-variance model
+	#####################
+	if (has_gene_ranking) {
+		for (model_suffix in ranking_model_suffixes) {
+			print(paste0("Plotting top-N-genes mean observed r (model suffix '", model_suffix, "') for ", gene_set_name, " ( ", nrow(gene_set_df), " genes )"))
+			top_n_df = compute_top_n_mean_observed_r_df(gene_set_df, model_suffix, observed_r_col, top_n_min_genes, five_tissue_colors)
+			write.table(top_n_df, paste0(visualization_dir, "five_tissue_top_n_genes_mean_observed_r", model_suffix, file_suffix, ".txt"), quote=FALSE, sep="\t", row.names=FALSE)
+			if (nrow(top_n_df) == 0) {
+				print("WARNING: no genes available for the top-N-genes ranking plot; skipping")
+			} else {
+				top_n_plot = make_per_tissue_top_n_mean_observed_r_panel_plot(top_n_df, top_n_xlab, top_n_ylab)
+				ggsave(paste0(visualization_dir, "five_tissue_top_n_genes_mean_observed_r", model_suffix, "_per_tissue_panels", file_suffix, ".pdf"), top_n_plot, width=10.5, height=3.9)
+
+				# Same plot without the uncertainty-penalized and uncalibrated rankings
+				top_n_main_df = top_n_df[!(as.character(top_n_df$ranking) %in% top_n_excluded_rankings), ]
+				top_n_main_plot = make_per_tissue_top_n_mean_observed_r_panel_plot(top_n_main_df, top_n_xlab, top_n_ylab)
+				ggsave(paste0(visualization_dir, "five_tissue_top_n_genes_mean_observed_r", model_suffix, "_main_rankings_per_tissue_panels", file_suffix, ".pdf"), top_n_main_plot, width=10.5, height=3.7)
+			}
 		}
 	}
 }
