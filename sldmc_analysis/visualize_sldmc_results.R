@@ -875,7 +875,10 @@ make_sldsc_correlation_stratification_forest_plot <- function(default_diff_df, s
 }
 
 
-load_simulation_summary <- function(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="489", n_anno="6")	{
+load_simulation_summary <- function(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="489", n_anno="6", fine_map_results_tag="fm_corr_results")	{
+	# fine_map_results_tag picks which run_fine_map_corr.py output supplies the "Fine-map" method:
+	# "fm_corr_results" (PMCES at confidently fine-mapped snps, PIP >= 0.9; the default) or
+	# "all_snp_pmces_corr_results" (PMCES at all snps regardless of PIP)
 	anno_name_arr = c()
 	method_arr = c()
 	est_arr = c()
@@ -898,7 +901,7 @@ load_simulation_summary <- function(simulation_results_dir, metric="correlation"
 	}
 
 	for (sim_iter in 1:n_sims) {
-		sim_file <- paste0(simulation_results_dir, "sim", sim_iter, "_sim_eqtl_ss_", eqtl_ss, "_", n_anno, "_anno_fm_corr_results_bootstrap_stats.txt")
+		sim_file <- paste0(simulation_results_dir, "sim", sim_iter, "_sim_eqtl_ss_", eqtl_ss, "_", n_anno, "_anno_", fine_map_results_tag, "_bootstrap_stats.txt")
 		tmp_df <- read.table(sim_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
 		# Filter to output metric
 		tmp_df <- tmp_df[(as.character(tmp_df$output_name) == metric), ]
@@ -966,7 +969,8 @@ load_in_oracle_result <- function(simulation_oracle_results_dir, column_number, 
 }
 
 
-make_simulation_estimate_bar_plot <- function(summary_df, oracle_df, ylab, bar_color, y_accuracy=.01) {
+make_simulation_estimate_bar_plot <- function(summary_df, oracle_df, ylab, bar_color, y_accuracy=.01, fine_map_label="Fine-map") {
+	# fine_map_label is the legend text shown for the "Fine-map" method rows of summary_df
 	# Grouped bar plot of the simulation estimates: x-axis is the simulated annotation bin, with one
 	# dodged bar per method (Fine-map / S-LDMC) and 95% CI error bars taken from the across-simulation
 	# SEM columns built by load_simulation_summary. The oracle ("true simulated") value for each bin is
@@ -992,12 +996,13 @@ make_simulation_estimate_bar_plot <- function(summary_df, oracle_df, ylab, bar_c
 	bar_df$ci_lower = bar_df$"95_lb"
 	bar_df$ci_upper = bar_df$"95_ub"
 	bar_df$method = factor(bar_df$method, levels=c("Fine-map", "S-LDMC"))
+	levels(bar_df$method) = c(fine_map_label, "S-LDMC")
 
 	# Mostly-grey version of the metric color for the Fine-map bars: near-neutral grey carrying just a
 	# hint of the metric hue, so it sits beside the saturated S-LDMC bar without competing with it
 	fine_map_color = colorRampPalette(c("#9CA3AF", bar_color))(10)[2]
 	method_colors = c(fine_map_color, bar_color)
-	names(method_colors) = c("Fine-map", "S-LDMC")
+	names(method_colors) = c(fine_map_label, "S-LDMC")
 
 	return(
 		ggplot(bar_df, aes(x=annotation_bin, y=mean, fill=method)) +
@@ -1027,6 +1032,220 @@ make_simulation_estimate_bar_plot <- function(summary_df, oracle_df, ylab, bar_c
 		)
 	)
 }
+
+summarize_across_simulations <- function(df_lined, group_columns) {
+	# Collapse per-simulation estimates to one row per group by averaging over simulations, with a
+	# Gaussian 95% interval built from the standard error of the mean across simulations (sd across
+	# simulations / sqrt(n simulations)). Same construction as load_simulation_summary, but NA/NaN
+	# estimates are dropped first: the fine-mapped strata can hold too few variant-gene pairs in a
+	# given simulation for the estimate (or the simulated truth) to be defined.
+	n_missing = sum(is.na(df_lined$mean))
+	if (n_missing > 0) {
+		warning(paste("Dropping", n_missing, "of", nrow(df_lined), "NA/NaN per-simulation estimates before averaging over simulations"))
+		df_lined = df_lined[!is.na(df_lined$mean), ]
+	}
+	sim_means = aggregate(df_lined["mean"], by=df_lined[group_columns], FUN=mean)
+	sim_sems = aggregate(df_lined["mean"], by=df_lined[group_columns], FUN=function(estimates) sd(estimates)/sqrt(length(estimates)))
+	colnames(sim_sems)[colnames(sim_sems) == "mean"] = "sem"
+	df <- merge(sim_means, sim_sems, by=group_columns)
+	df$"95_lb" = df$mean - 1.96*df$sem
+	df$"95_ub" = df$mean + 1.96*df$sem
+	return(df)
+}
+
+load_fm_stratified_simulation_summary <- function(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="489", n_anno="6") {
+	# S-LDMC estimates from the run on fine-mapping-status annotations (run_correlation_simulation.sh,
+	# Part 5.5; annotations built by generate_fine_mapped_sldmc_annotation.py). That run carries two
+	# annotations: 'sim_signal_prop_x_fm_status' crosses each simulated signal-proportion category with
+	# fm_status (1 = SuSiE PIP >= 0.9, 0 = otherwise), and 'fm_status' is fine-mapping status pooled
+	# across the simulated categories. Returns one row per (annotation_name, fm_status), where
+	# annotation_name is the 1-based simulated category index ("1".."6") or "All" for the pooled rows.
+	fm_status_names = c("not_fine_mapped", "fine_mapped")
+	# Assumes n_anno=6: the simulation's signal-proportion grid is np.linspace(0, 1, n_anno)
+	signal_prop_names = c("prop_0.0", "prop_0.2", "prop_0.4", "prop_0.6", "prop_0.8", "prop_1.0")
+	# Crossed category index is (input category index)*2 + fm_status, so fm_status varies fastest
+	expected_crossed_category_names = as.vector(t(outer(signal_prop_names, fm_status_names, paste, sep="_")))
+
+	anno_name_arr = c()
+	fm_status_arr = c()
+	est_arr = c()
+	for (sim_iter in 1:n_sims) {
+		sim_file <- paste0(simulation_results_dir, "sim", sim_iter, "_sim_eqtl_ss_", eqtl_ss, "_fm_status_ld_corr_results_bootstrap_stats.txt")
+		tmp_df <- read.table(sim_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+		# Filter to output metric
+		tmp_df <- tmp_df[(as.character(tmp_df$output_name) == metric), ]
+
+		crossed_df <- tmp_df[as.character(tmp_df$annotation_name) == "sim_signal_prop_x_fm_status", ]
+		if (identical(as.character(crossed_df$category_name), expected_crossed_category_names) == FALSE) {
+			stop(paste("Unexpected sim_signal_prop_x_fm_status category_name values in simulation file:", sim_file))
+		}
+		est_arr = c(est_arr, crossed_df$mean)
+		anno_name_arr = c(anno_name_arr, as.character(rep(1:length(signal_prop_names), each=length(fm_status_names))))
+		fm_status_arr = c(fm_status_arr, rep(0:1, times=length(signal_prop_names)))
+
+		pooled_df <- tmp_df[as.character(tmp_df$annotation_name) == "fm_status", ]
+		if (identical(as.character(pooled_df$category_name), fm_status_names) == FALSE) {
+			stop(paste("Unexpected fm_status category_name values in simulation file:", sim_file))
+		}
+		est_arr = c(est_arr, pooled_df$mean)
+		anno_name_arr = c(anno_name_arr, rep("All", length(fm_status_names)))
+		fm_status_arr = c(fm_status_arr, 0:1)
+	}
+
+	df_lined <- data.frame(
+		annotation_name=anno_name_arr,
+		fm_status=fm_status_arr,
+		mean=est_arr,
+		stringsAsFactors=FALSE
+	)
+	return(summarize_across_simulations(df_lined, c("annotation_name", "fm_status")))
+}
+
+load_fm_stratified_pmces_simulation_summary <- function(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="489", n_anno="6") {
+	# Direct estimates comparing SuSiE posterior mean causal effect sizes (PMCES) with the simulated borzoi
+	# predictions, stratified by fine-mapping status (run_correlation_simulation.sh Part 6, run_fine_map_corr.py).
+	# The fine-mapped file holds pairs with SuSiE PIP >= 0.9 and the non-fine-mapped file all other pairs,
+	# each with one row per (simulated category, output_name). Returns the same (annotation_name, fm_status)
+	# layout as load_fm_stratified_simulation_summary, but with no pooled "All" rows since Part 6 does not
+	# compute them.
+	# Assumes n_anno=6: the simulation's signal-proportion grid is np.linspace(0, 1, n_anno)
+	expected_annotation_names = c("anno0", "anno1", "anno2", "anno3", "anno4", "anno5")
+	fm_status_to_file_tag = c("non_fm_corr_results", "fm_corr_results")
+
+	anno_name_arr = c()
+	fm_status_arr = c()
+	est_arr = c()
+	for (sim_iter in 1:n_sims) {
+		for (fm_status in 0:1) {
+			sim_file <- paste0(simulation_results_dir, "sim", sim_iter, "_sim_eqtl_ss_", eqtl_ss, "_", n_anno, "_anno_", fm_status_to_file_tag[fm_status + 1], "_bootstrap_stats.txt")
+			tmp_df <- read.table(sim_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+			# Filter to output metric
+			tmp_df <- tmp_df[(as.character(tmp_df$output_name) == metric), ]
+			if (identical(as.character(tmp_df$annotation_name), expected_annotation_names) == FALSE) {
+				stop(paste("Unexpected annotation_name values in simulation file:", sim_file))
+			}
+			est_arr = c(est_arr, tmp_df$mean)
+			anno_name_arr = c(anno_name_arr, as.character(1:nrow(tmp_df)))
+			fm_status_arr = c(fm_status_arr, rep(fm_status, nrow(tmp_df)))
+		}
+	}
+
+	df_lined <- data.frame(
+		annotation_name=anno_name_arr,
+		fm_status=fm_status_arr,
+		mean=est_arr,
+		stringsAsFactors=FALSE
+	)
+	return(summarize_across_simulations(df_lined, c("annotation_name", "fm_status")))
+}
+
+load_in_fm_stratified_oracle_result <- function(simulation_fm_stratified_oracle_results_dir, column_name, n_sims=50, eqtl_ss="489", n_anno="6") {
+	# True simulated values stratified by (simulated category, fm_status), written by
+	# calculate_true_fm_stratified_calibration_effect_sizes_and_correlation.py (run_correlation_simulation.sh,
+	# Part 3.5). column_name picks the metric, e.g. "pearson_correlation" or "regression_slope".
+	# Returns the same (annotation_name, fm_status) layout as load_fm_stratified_simulation_summary, with the
+	# file's pooled 'all_annotations' rows mapped to annotation_name "All".
+	expected_annotation_names = c(paste0("anno", 0:(as.numeric(n_anno) - 1)), "all_annotations")
+	output_annotation_names = c(as.character(1:as.numeric(n_anno)), "All")
+
+	anno_name_arr = c()
+	fm_status_arr = c()
+	est_arr = c()
+	for (sim_iter in 1:n_sims) {
+		sim_file <- paste0(simulation_fm_stratified_oracle_results_dir, "sim", sim_iter, "_sim_eqtl_ss_", eqtl_ss, "_", n_anno, "_anno_true_fm_stratified_effect_summary.txt")
+		tmp_df <- read.table(sim_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+		# One row per (annotation, fm_status) with fm_status varying fastest
+		if (identical(as.character(tmp_df$annotation_name), rep(expected_annotation_names, each=2)) == FALSE) {
+			stop(paste("Unexpected annotation_name values in fm-stratified oracle file:", sim_file))
+		}
+		if (identical(as.integer(tmp_df$fm_status), rep(0:1, times=length(expected_annotation_names))) == FALSE) {
+			stop(paste("Unexpected fm_status values in fm-stratified oracle file:", sim_file))
+		}
+		if (!(column_name %in% colnames(tmp_df))) {
+			stop(paste("Column", column_name, "missing from fm-stratified oracle file:", sim_file))
+		}
+		est_arr = c(est_arr, tmp_df[[column_name]])
+		anno_name_arr = c(anno_name_arr, rep(output_annotation_names, each=2))
+		fm_status_arr = c(fm_status_arr, as.integer(tmp_df$fm_status))
+	}
+
+	df_lined <- data.frame(
+		annotation_name=anno_name_arr,
+		fm_status=fm_status_arr,
+		mean=est_arr,
+		stringsAsFactors=FALSE
+	)
+	return(summarize_across_simulations(df_lined, c("annotation_name", "fm_status")))
+}
+
+make_fm_stratified_simulation_estimate_bar_plot <- function(summary_df, oracle_df, ylab, bar_color, y_accuracy=.01) {
+	# Grouped bar plot of the S-LDMC estimates stratified by fine-mapping status: x-axis is the simulated
+	# annotation category (plus "All", the pooled-across-categories estimate), with one dodged bar per
+	# fine-mapping status and 95% CI error bars from the across-simulation SEM columns built by
+	# load_fm_stratified_simulation_summary. The true simulated value for each (category, fm_status)
+	# pair is overlaid as a horizontal crossbar plus an open point dodged alongside its bar, as in
+	# make_simulation_estimate_bar_plot, so bar-vs-crossbar shows the bias. bar_color is the metric's
+	# color used by the other plots; the fine-mapped bar takes it directly and the not-fine-mapped bar a
+	# grey-blended version of it.
+	# Fine-mapped = SuSiE PIP >= 0.9 (fm_pip_thresh in run_correlation_simulation.sh); kept short so both legends fit a half-width panel
+	fm_status_labels = c("Not fine-mapped", "Fine-mapped")
+	bar_df = summary_df
+	truth_df = oracle_df
+	bar_df$fm_status_label = factor(fm_status_labels[bar_df$fm_status + 1], levels=fm_status_labels)
+	truth_df$fm_status_label = factor(fm_status_labels[truth_df$fm_status + 1], levels=fm_status_labels)
+
+	# annotation_name is the 1-based simulated category index (pure noise up to pure signal; see
+	# make_simulation_estimate_bar_plot) or "All", which goes last. The x-axis holds the categories the
+	# estimates cover; truth rows for other categories (e.g. "All" when the estimator has no pooled
+	# version) are dropped
+	category_ids = sort(unique(bar_df$annotation_name))
+	category_ids = c(setdiff(category_ids, "All"), intersect(category_ids, "All"))
+	truth_df = truth_df[truth_df$annotation_name %in% category_ids, ]
+	bar_df$annotation_bin = factor(bar_df$annotation_name, levels=category_ids)
+	truth_df$annotation_bin = factor(truth_df$annotation_name, levels=category_ids)
+
+	# The CI bounds live in columns whose names start with a digit, so they need quoting
+	bar_df$ci_lower = bar_df$"95_lb"
+	bar_df$ci_upper = bar_df$"95_ub"
+
+	not_fine_mapped_color = colorRampPalette(c("#9CA3AF", bar_color))(10)[2]
+	fm_status_colors = c(not_fine_mapped_color, bar_color)
+	names(fm_status_colors) = fm_status_labels
+
+	dodge = position_dodge(width=.78)
+	plot = ggplot(bar_df, aes(x=annotation_bin, y=mean, fill=fm_status_label)) +
+		geom_col(position=dodge, width=.68, color="#111827", linewidth=.25) +
+		geom_errorbar(aes(ymin=ci_lower, ymax=ci_upper), position=dodge, width=.16, linewidth=.4, color="#111827") +
+		# group= carries the fine-mapping status so the truth markers dodge onto their own bar
+		geom_errorbar(data=truth_df, aes(x=annotation_bin, ymin=mean, ymax=mean, group=fm_status_label, color="True simulated"), inherit.aes=FALSE, position=dodge, width=.3, linewidth=.9) +
+		geom_point(data=truth_df, aes(x=annotation_bin, y=mean, group=fm_status_label, color="True simulated"), inherit.aes=FALSE, position=dodge, shape=21, size=1.5, stroke=.55, fill="white") +
+		geom_hline(yintercept=0, linewidth=.4, color="#6B7280", linetype="dashed")
+	if ("All" %in% category_ids) {
+		# Separate the pooled "All" column from the per-category columns
+		plot = plot + geom_vline(xintercept=length(category_ids) - .5, linewidth=.4, color="#9CA3AF", linetype="dotted")
+	}
+	return(
+		plot +
+		scale_fill_manual(values=fm_status_colors) +
+		scale_color_manual(values=c("True simulated"="#111827"), guide="none") +
+		scale_y_continuous(labels=number_format(accuracy=y_accuracy)) +
+		labs(fill=NULL, color=NULL) +
+		xlab("Simulated annotation category") +
+		ylab(ylab) +
+		figure_theme() +
+		theme(
+			legend.position="top",
+			legend.text=element_text(size=10),
+			legend.key.size=unit(.9, "lines"),
+			legend.box.spacing=unit(2, "pt"),
+			legend.margin=margin(0, 0, 0, 0),
+			axis.text.x=element_text(angle=0, hjust=.5),
+			axis.title=element_text(size=10),
+			plot.margin=margin(5, 8, 2, 5)
+		)
+	)
+}
+
 
 load_in_per_tissue_ld_moments <- function(tissue_info_df, ld_moments_output_dir, file_suffix="_default_binned_100_ld_moments.txt") {
 	# Load the binned files written by extract_ld_moments.py's create_binned_ld_moment_file for
@@ -1140,6 +1359,8 @@ simulation_oracle_results_dir = args[6]
 # Directory holding the per-tissue borzoi annotation files (source of the category-counts files)
 borzoi_annotation_dir = args[7]
 ld_moments_output_dir = args[8]
+# Directory holding the per-simulation fine-mapping-status stratified truth files (the simulated eQTL effects directory)
+simulation_fm_stratified_oracle_results_dir = args[9]
 
 
 ######################
@@ -1166,6 +1387,74 @@ simulation_calibration_plot = make_simulation_estimate_bar_plot(simulation_calib
 joint_simulation <- plot_grid(simulation_calibration_plot, simulation_correlation_plot, ncol=2, labels=c("a", "b"))
 #simulation_output_file = paste0(visualization_dir, "simulation_joint_stimates.pdf")
 #ggsave(simulation_output_file, joint_simulation, width=7.2, height=2.5)
+
+
+######################
+# Fine-mapping-status stratified simulation visualization
+# S-LDMC run on each (simulated annotation category, fine-mapped boolean) pair, against the matching
+# simulated truth (run_correlation_simulation.sh Parts 3.5 and 5.5)
+######################
+
+# Load in simulation data
+simulation_fm_stratified_correlation_summary_df = load_fm_stratified_simulation_summary(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="489", n_anno="6")
+simulation_fm_stratified_calibration_summary_df = load_fm_stratified_simulation_summary(simulation_results_dir, metric="calibration_slope", n_sims=50, eqtl_ss="489", n_anno="6")
+sim_fm_stratified_corr_oracle_df = load_in_fm_stratified_oracle_result(simulation_fm_stratified_oracle_results_dir, "pearson_correlation", n_sims=50, eqtl_ss="489", n_anno="6")
+sim_fm_stratified_calibration_oracle_df = load_in_fm_stratified_oracle_result(simulation_fm_stratified_oracle_results_dir, "regression_slope", n_sims=50, eqtl_ss="489", n_anno="6")
+
+# Correlation: S-LDMC estimates in each (category, fm_status) pair against the true simulated correlation
+simulation_fm_stratified_correlation_plot = make_fm_stratified_simulation_estimate_bar_plot(simulation_fm_stratified_correlation_summary_df, sim_fm_stratified_corr_oracle_df, "Correlation of causal\nand predicted eQTL effects", "#3F88C5")
+# Calibration: S-LDMC estimates in each (category, fm_status) pair against the true simulated regression slope
+simulation_fm_stratified_calibration_plot = make_fm_stratified_simulation_estimate_bar_plot(simulation_fm_stratified_calibration_summary_df, sim_fm_stratified_calibration_oracle_df, "Calibration of causal\non predicted eQTL effects", "#B85C38", y_accuracy=.1)
+
+# Joint version
+joint_fm_stratified_simulation <- plot_grid(simulation_fm_stratified_calibration_plot, simulation_fm_stratified_correlation_plot, ncol=2, labels=c("a", "b"))
+simulation_fm_stratified_output_file = paste0(visualization_dir, "simulation_fm_stratified_estimates.pdf")
+ggsave(simulation_fm_stratified_output_file, joint_fm_stratified_simulation, width=7.2, height=2.9)
+
+
+######################
+# Fine-mapping-status stratified simulation visualization: direct PMCES-based estimates
+# Analogous to the S-LDMC panel above, but the bars are the correlation / calibration of SuSiE posterior
+# mean causal effect sizes against the simulated borzoi predictions, computed directly within each
+# (simulated annotation category, fine-mapped boolean) pair (run_correlation_simulation.sh Part 6)
+######################
+
+# Load in simulation data (same fm-stratified truth as above)
+simulation_fm_stratified_pmces_correlation_summary_df = load_fm_stratified_pmces_simulation_summary(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="489", n_anno="6")
+simulation_fm_stratified_pmces_calibration_summary_df = load_fm_stratified_pmces_simulation_summary(simulation_results_dir, metric="calibration_slope", n_sims=50, eqtl_ss="489", n_anno="6")
+
+# Correlation: PMCES-vs-borzoi correlation in each (category, fm_status) pair against the true simulated correlation
+simulation_fm_stratified_pmces_correlation_plot = make_fm_stratified_simulation_estimate_bar_plot(simulation_fm_stratified_pmces_correlation_summary_df, sim_fm_stratified_corr_oracle_df, "Correlation of fine-mapped PMCES\nand predicted eQTL effects", "#3F88C5")
+# Calibration: regression of PMCES on borzoi in each (category, fm_status) pair against the true simulated regression slope
+simulation_fm_stratified_pmces_calibration_plot = make_fm_stratified_simulation_estimate_bar_plot(simulation_fm_stratified_pmces_calibration_summary_df, sim_fm_stratified_calibration_oracle_df, "Calibration of fine-mapped PMCES\non predicted eQTL effects", "#B85C38", y_accuracy=.1)
+
+# Joint version
+joint_fm_stratified_pmces_simulation <- plot_grid(simulation_fm_stratified_pmces_calibration_plot, simulation_fm_stratified_pmces_correlation_plot, ncol=2, labels=c("a", "b"))
+simulation_fm_stratified_pmces_output_file = paste0(visualization_dir, "simulation_fm_stratified_pmces_estimates.pdf")
+ggsave(simulation_fm_stratified_pmces_output_file, joint_fm_stratified_pmces_simulation, width=7.2, height=2.9)
+
+
+######################
+# Main simulation visualization with the fine-mapping method applied to PMCES at all snps
+# Same as panels a/b of the main simulation figure, but the fine-mapping bars use the correlation /
+# calibration of SuSiE posterior mean causal effect sizes against the borzoi predictions across all snps
+# in each simulated category, rather than only confidently fine-mapped snps
+# (run_correlation_simulation.sh Part 6, output C)
+######################
+
+# Load in simulation data (S-LDMC estimates and category-wide truth are the same as in the main figure)
+simulation_all_snp_pmces_correlation_summary_df = load_simulation_summary(simulation_results_dir, metric="correlation", n_sims=50, eqtl_ss="489", n_anno="6", fine_map_results_tag="all_snp_pmces_corr_results")
+simulation_all_snp_pmces_calibration_summary_df = load_simulation_summary(simulation_results_dir, metric="calibration_slope", n_sims=50, eqtl_ss="489", n_anno="6", fine_map_results_tag="all_snp_pmces_corr_results")
+
+# Correlation: estimates from each method against the true simulated correlation
+simulation_all_snp_pmces_correlation_plot = make_simulation_estimate_bar_plot(simulation_all_snp_pmces_correlation_summary_df, sim_corr_oracle_df, "Correlation of causal\nand predicted eQTL effects", "#3F88C5", fine_map_label="PMCES (all SNPs)")
+# Calibration: estimates from each method against the true simulated regression slope
+simulation_all_snp_pmces_calibration_plot = make_simulation_estimate_bar_plot(simulation_all_snp_pmces_calibration_summary_df, sim_calibration_oracle_df, "Calibration of causal\non predicted eQTL effects", "#B85C38", y_accuracy=.1, fine_map_label="PMCES (all SNPs)")
+
+# Joint version
+joint_all_snp_pmces_simulation <- plot_grid(simulation_all_snp_pmces_calibration_plot, simulation_all_snp_pmces_correlation_plot, ncol=2, labels=c("a", "b"))
+simulation_all_snp_pmces_output_file = paste0(visualization_dir, "simulation_all_snp_pmces_estimates.pdf")
+ggsave(simulation_all_snp_pmces_output_file, joint_all_snp_pmces_simulation, width=7.2, height=2.9)
 
 
 ######################

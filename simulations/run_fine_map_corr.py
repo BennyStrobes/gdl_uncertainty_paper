@@ -472,6 +472,8 @@ onek_genomes_plink_filestem = sys.argv[4]
 fm_corr_output_stem = sys.argv[5]
 # Optional: if provided, also compute borzoi vs PMCES at all snps with PIP < pip_thresh
 non_fm_corr_output_stem = sys.argv[6] if len(sys.argv) > 6 else None
+# Optional: if provided, also compute borzoi vs PMCES at all snps regardless of PIP
+all_snp_corr_output_stem = sys.argv[7] if len(sys.argv) > 7 else None
 
 pip_thresh = 0.9
 
@@ -555,3 +557,12 @@ compute_and_write_bootstrap_stats(anno_names, fm_status_to_anno_name_to_borzoi_e
 # B. All other snps (fm_status 0)
 if non_fm_corr_output_stem is not None:
 	compute_and_write_bootstrap_stats(anno_names, fm_status_to_anno_name_to_borzoi_effect_vec[0], fm_status_to_anno_name_to_eqtl_effect_vec[0], non_fm_corr_output_stem + '_bootstrap_stats.txt')
+
+# C. All snps regardless of fine-mapping status (fm_status 0 and 1 pooled)
+if all_snp_corr_output_stem is not None:
+	all_snp_anno_name_to_borzoi_effect_vec = {}
+	all_snp_anno_name_to_eqtl_effect_vec = {}
+	for anno_name in anno_names:
+		all_snp_anno_name_to_borzoi_effect_vec[anno_name] = fm_status_to_anno_name_to_borzoi_effect_vec[0][anno_name] + fm_status_to_anno_name_to_borzoi_effect_vec[1][anno_name]
+		all_snp_anno_name_to_eqtl_effect_vec[anno_name] = fm_status_to_anno_name_to_eqtl_effect_vec[0][anno_name] + fm_status_to_anno_name_to_eqtl_effect_vec[1][anno_name]
+	compute_and_write_bootstrap_stats(anno_names, all_snp_anno_name_to_borzoi_effect_vec, all_snp_anno_name_to_eqtl_effect_vec, all_snp_corr_output_stem + '_bootstrap_stats.txt')
