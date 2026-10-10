@@ -69,6 +69,18 @@ fi
 
 
 ####################################################
+# Part 3.5: Generate true simulated calibration effect sizes + correlation stratified by (annotation, fm_status)
+# fm_status: 0 = PIP < thresh (or missing from susie file), 1 = PIP >= thresh
+####################################################
+echo "PART 3.5"
+fm_pip_thresh="0.9"
+fm_stratified_simulation_parameter_summary_file=${est_eqtl_effect_size_dir}"sim"${simulation_iter}"_sim_eqtl_ss_"${eqtl_sample_size}"_"${n_anno}"_anno_true_fm_stratified_effect_summary.txt"
+source ~/.bashrc
+conda activate plink_env
+python calculate_true_fm_stratified_calibration_effect_sizes_and_correlation.py $est_borzoi_standardized_effect_size_file $sim_variant_gene_annotation_file $causal_variant_gene_effect_size_file $susie_fine_mapping_file $fm_pip_thresh $fm_stratified_simulation_parameter_summary_file
+
+
+####################################################
 # Part 4: Simulate estimated eqtl effect sizes
 ####################################################
 echo "PART 4"
@@ -100,8 +112,9 @@ python ${sldmc_code_dir}sldmc.py \
 fi
 
 ####################################################
-# Part 5.5: Run LD corr inference with binary confidently-fine-mapped annotation
+# Part 5.5: Run LD corr inference with confidently-fine-mapped annotations
 # fm_status: 0 = PIP < 0.9 (or missing from susie file), 1 = PIP >= 0.9
+# Also includes each simulated annotation crossed with fm_status
 ####################################################
 echo "PART 5.5"
 fm_pip_thresh="0.9"
@@ -120,16 +133,16 @@ python ${sldmc_code_dir}sldmc.py \
 
 
 ####################################################
-# Part 6: Run correlations based on fine-mapped snps
-# A. Confidently fine-mapped snps (PIP >= 0.9): borzoi vs PMCES
-# B. All other snps (PIP < 0.9): PMCES vs true simulated causal effect
+# Part 6: Run correlations (borzoi vs PMCES) stratified by annotation, in:
+# A. Confidently fine-mapped snps (PIP >= 0.9)
+# B. All other snps (PIP < 0.9)
 ####################################################
 source ~/.bashrc
 conda activate plink_env
 echo "PART 6"
 fm_corr_output_stem=${inf_output_dir}"sim"${simulation_iter}"_sim_eqtl_ss_"${eqtl_sample_size}"_"${n_anno}"_anno_fm_corr_results"
 non_fm_corr_output_stem=${inf_output_dir}"sim"${simulation_iter}"_sim_eqtl_ss_"${eqtl_sample_size}"_"${n_anno}"_anno_non_fm_corr_results"
-python run_fine_map_corr.py $est_borzoi_standardized_effect_size_file $susie_fine_mapping_file $sim_variant_gene_annotation_file $onek_genomes_plink_filestem $fm_corr_output_stem $causal_variant_gene_effect_size_file $non_fm_corr_output_stem
+python run_fine_map_corr.py $est_borzoi_standardized_effect_size_file $susie_fine_mapping_file $sim_variant_gene_annotation_file $onek_genomes_plink_filestem $fm_corr_output_stem $non_fm_corr_output_stem
 
 
 date

@@ -415,28 +415,6 @@ def create_mapping_from_vg_pair_to_fine_mapped_eqtl_effect_size(est_fine_mapped_
 	return mapping
 
 
-def create_mapping_from_vg_pair_to_true_causal_effect_size(causal_variant_gene_effect_size_file):
-	f = gzip.open(causal_variant_gene_effect_size_file, 'rt')
-	mapping = {}
-	head_count = 0
-	for line in f:
-		line = line.rstrip()
-		data = line.split('\t')
-		if head_count == 0:
-			head_count = head_count + 1
-			continue
-		gene = data[0]
-		variant = data[1]
-		effect = float(data[6])
-		vg_pair = variant + ':' + gene
-		if vg_pair in mapping:
-			print('errorr')
-			pdb.set_trace()
-		mapping[vg_pair] = effect
-	f.close()
-	return mapping
-
-
 def compute_correlation(x, y):
 	valid_indices = np.isfinite(x) & np.isfinite(y)
 	x = x[valid_indices]
@@ -492,10 +470,8 @@ est_fine_mapped_eqtl_effect_size_file = sys.argv[2]
 sim_variant_gene_annotation_file = sys.argv[3]
 onek_genomes_plink_filestem = sys.argv[4]
 fm_corr_output_stem = sys.argv[5]
-# Optional: if both are provided, also compute PMCES vs truth at all snps with PIP < pip_thresh
-causal_variant_gene_effect_size_file = sys.argv[6] if len(sys.argv) > 6 else None
-non_fm_corr_output_stem = sys.argv[7] if len(sys.argv) > 7 else None
-run_non_fm_analysis = causal_variant_gene_effect_size_file is not None and non_fm_corr_output_stem is not None
+# Optional: if provided, also compute borzoi vs PMCES at all snps with PIP < pip_thresh
+non_fm_corr_output_stem = sys.argv[6] if len(sys.argv) > 6 else None
 
 pip_thresh = 0.9
 
@@ -506,11 +482,6 @@ pip_thresh = 0.9
 # Create mapping from variant_gene name to (PIP, posterior mean) for all fine-mapped snps
 vg_to_fine_mapped_eqtl_effect_size = create_mapping_from_vg_pair_to_fine_mapped_eqtl_effect_size(est_fine_mapped_eqtl_effect_size_file)
 
-# Create mapping from variant_gene name to true simulated causal effect size
-vg_to_true_causal_effect_size = {}
-if run_non_fm_analysis:
-	vg_to_true_causal_effect_size = create_mapping_from_vg_pair_to_true_causal_effect_size(causal_variant_gene_effect_size_file)
-
 # Create mapping from gene id to vector of est borzoi effects
 gene_id_to_est_borzoi_effects = create_mapping_from_gene_id_to_causal_effects(est_borzoi_effect_size_file)
 
@@ -518,18 +489,16 @@ gene_id_to_est_borzoi_effects = create_mapping_from_gene_id_to_causal_effects(es
 gene_id_to_variant_gene_anno, anno_names = create_mapping_from_gene_id_to_variant_gene_annotations(sim_variant_gene_annotation_file)
 
 
-# Initialize vectors to keep track of effects
-# A. Confidently fine-mapped snps (PIP >= pip_thresh): borzoi vs PMCES
-anno_name_to_borzoi_effect_vec = {}
-anno_name_to_eqtl_effect_vec = {}
-# B. All other snps (PIP < pip_thresh): PMCES vs truth
-anno_name_to_non_fm_pmces_vec = {}
-anno_name_to_non_fm_truth_vec = {}
-for anno_name in anno_names:
-	anno_name_to_borzoi_effect_vec[anno_name] = []
-	anno_name_to_eqtl_effect_vec[anno_name] = []
-	anno_name_to_non_fm_pmces_vec[anno_name] = []
-	anno_name_to_non_fm_truth_vec[anno_name] = []
+# Initialize vectors to keep track of effects, stratified by (annotation, fm_status)
+# fm_status 1: confidently fine-mapped snps (PIP >= pip_thresh)
+# fm_status 0: all other snps (PIP < pip_thresh)
+# Both compare borzoi effects vs PMCES
+fm_status_to_anno_name_to_borzoi_effect_vec = {0: {}, 1: {}}
+fm_status_to_anno_name_to_eqtl_effect_vec = {0: {}, 1: {}}
+for fm_status in [0, 1]:
+	for anno_name in anno_names:
+		fm_status_to_anno_name_to_borzoi_effect_vec[fm_status][anno_name] = []
+		fm_status_to_anno_name_to_eqtl_effect_vec[fm_status][anno_name] = []
 
 
 # Organize
@@ -539,49 +508,40 @@ for gene_id in [*gene_id_to_est_borzoi_effects]:
 		if variant_gene_pair not in vg_to_fine_mapped_eqtl_effect_size:
 			continue
 		pip, fm_effect_size = vg_to_fine_mapped_eqtl_effect_size[variant_gene_pair]
+		borzoi_effect_size = gene_id_to_est_borzoi_effects[gene_id][var_id][6]
 		active_annotations = np.where(gene_id_to_variant_gene_anno[gene_id][var_id][6] == 1.0)[0]
 		if len(active_annotations) != 1:
 			print('annotation assumption error')
 			pdb.set_trace()
 		anno_name = anno_names[active_annotations[0]]
-		if pip >= pip_thresh:
-			borzoi_effect_size = gene_id_to_est_borzoi_effects[gene_id][var_id][6]
-			anno_name_to_borzoi_effect_vec[anno_name].append(borzoi_effect_size)
-			anno_name_to_eqtl_effect_vec[anno_name].append(fm_effect_size)
-		elif run_non_fm_analysis:
-			if variant_gene_pair not in vg_to_true_causal_effect_size:
-				print('missing true causal effect assumption error')
-				pdb.set_trace()
-			true_effect_size = vg_to_true_causal_effect_size[variant_gene_pair]
-			anno_name_to_non_fm_pmces_vec[anno_name].append(fm_effect_size)
-			anno_name_to_non_fm_truth_vec[anno_name].append(true_effect_size)
+		fm_status = 1 if pip >= pip_thresh else 0
+		fm_status_to_anno_name_to_borzoi_effect_vec[fm_status][anno_name].append(borzoi_effect_size)
+		fm_status_to_anno_name_to_eqtl_effect_vec[fm_status][anno_name].append(fm_effect_size)
 
 
-def compute_and_write_bootstrap_stats(anno_names, anno_name_to_x_vec, anno_name_to_y_vec, output_names, summary_stats_output_file, n_bs=100):
+def compute_and_write_bootstrap_stats(anno_names, anno_name_to_borzoi_effect_vec, anno_name_to_eqtl_effect_vec, summary_stats_output_file, n_bs=100):
+	output_names = ['correlation', 'calibration_slope']
 	observed_stats = {}
 	bootstrap_stats = {}
 	for anno_name in anno_names:
-		x_effects = np.asarray(anno_name_to_x_vec[anno_name])
-		y_effects = np.asarray(anno_name_to_y_vec[anno_name])
-		raw_stats = compute_fine_mapped_stats(x_effects, y_effects)
-		observed_stats[anno_name] = {}
-		for output_name in output_names:
-			observed_stats[anno_name][output_name] = raw_stats[output_names[output_name]]
+		borzoi_effects = np.asarray(anno_name_to_borzoi_effect_vec[anno_name])
+		eqtl_effects = np.asarray(anno_name_to_eqtl_effect_vec[anno_name])
+		observed_stats[anno_name] = compute_fine_mapped_stats(borzoi_effects, eqtl_effects)
 		bootstrap_stats[anno_name] = {}
 		for output_name in output_names:
 			bootstrap_stats[anno_name][output_name] = np.full(n_bs, np.nan)
-		if len(x_effects) < 2:
+		if len(borzoi_effects) < 2:
 			continue
 		for bs_iter in range(n_bs):
-			bs_indices = np.random.choice(np.arange(len(x_effects)), size=len(x_effects), replace=True)
-			bs_stats = compute_fine_mapped_stats(x_effects[bs_indices], y_effects[bs_indices])
+			bs_indices = np.random.choice(np.arange(len(borzoi_effects)), size=len(borzoi_effects), replace=True)
+			bs_stats = compute_fine_mapped_stats(borzoi_effects[bs_indices], eqtl_effects[bs_indices])
 			for output_name in output_names:
-				bootstrap_stats[anno_name][output_name][bs_iter] = bs_stats[output_names[output_name]]
+				bootstrap_stats[anno_name][output_name][bs_iter] = bs_stats[output_name]
 
 	with open(summary_stats_output_file, 'w') as t:
 		t.write('annotation_name\toutput_name\tn_snps\tmean\tbootstrapped_mean\tbootstrap_se\tgaussian_z_score\tempirical_ci_lower\tempirical_ci_upper\n')
 		for anno_name in anno_names:
-			n_snps = len(anno_name_to_x_vec[anno_name])
+			n_snps = len(anno_name_to_borzoi_effect_vec[anno_name])
 			for output_name in output_names:
 				observed_value = observed_stats[anno_name][output_name]
 				bootstrap_mean, bootstrap_se, gaussian_z_score, ci_lower, ci_upper = summarize_bootstrap_distribution(observed_value, bootstrap_stats[anno_name][output_name])
@@ -589,13 +549,9 @@ def compute_and_write_bootstrap_stats(anno_names, anno_name_to_x_vec, anno_name_
 	print(summary_stats_output_file)
 
 
-# A. Confidently fine-mapped snps: borzoi vs PMCES
-# output_name -> key in compute_fine_mapped_stats
-fm_output_names = {'correlation': 'correlation', 'calibration_slope': 'calibration_slope'}
-compute_and_write_bootstrap_stats(anno_names, anno_name_to_borzoi_effect_vec, anno_name_to_eqtl_effect_vec, fm_output_names, fm_corr_output_stem + '_bootstrap_stats.txt')
+# A. Confidently fine-mapped snps (fm_status 1)
+compute_and_write_bootstrap_stats(anno_names, fm_status_to_anno_name_to_borzoi_effect_vec[1], fm_status_to_anno_name_to_eqtl_effect_vec[1], fm_corr_output_stem + '_bootstrap_stats.txt')
 
-# B. All other snps (PIP < pip_thresh): PMCES vs truth
-# calibration slope here is the regression of truth on PMCES
-if run_non_fm_analysis:
-	non_fm_output_names = {'pmces_truth_correlation': 'correlation', 'pmces_truth_calibration_slope': 'calibration_slope'}
-	compute_and_write_bootstrap_stats(anno_names, anno_name_to_non_fm_pmces_vec, anno_name_to_non_fm_truth_vec, non_fm_output_names, non_fm_corr_output_stem + '_bootstrap_stats.txt')
+# B. All other snps (fm_status 0)
+if non_fm_corr_output_stem is not None:
+	compute_and_write_bootstrap_stats(anno_names, fm_status_to_anno_name_to_borzoi_effect_vec[0], fm_status_to_anno_name_to_eqtl_effect_vec[0], non_fm_corr_output_stem + '_bootstrap_stats.txt')
