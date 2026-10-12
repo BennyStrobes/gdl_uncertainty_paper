@@ -596,8 +596,9 @@ make_five_tissue_binned_ld_moment_plot <- function(df, tissue_colors, pseudo_log
 	}
 	tissue_levels = names(tissue_colors)[names(tissue_colors) %in% plot_df$tissue]
 	tissue_labels = gsub("_", " ", tissue_levels)
-	# "Heart Left Ventricle" overflows the narrow panel strips, so it gets wrapped onto two lines
+	# "Heart Left Ventricle" and "Muscle Skeletal" overflow the narrow panel strips, so they get wrapped onto two lines
 	tissue_labels = gsub("^Heart Left Ventricle$", "Heart\nLeft Ventricle", tissue_labels)
+	tissue_labels = gsub("^Muscle Skeletal$", "Muscle\nSkeletal", tissue_labels)
 	plot_df$tissue = factor(plot_df$tissue, levels=tissue_levels, labels=tissue_labels)
 	tissue_colors_use = as.character(tissue_colors[tissue_levels])
 
@@ -752,6 +753,7 @@ make_five_tissue_unbinned_ld_moment_plot <- function(df, tissue_colors, n_bins=1
 	tissue_levels = names(tissue_colors)[names(tissue_colors) %in% plot_df$tissue]
 	tissue_labels = gsub("_", " ", tissue_levels)
 	tissue_labels = gsub("^Heart Left Ventricle$", "Heart\nLeft Ventricle", tissue_labels)
+	tissue_labels = gsub("^Muscle Skeletal$", "Muscle\nSkeletal", tissue_labels)
 	plot_df$tissue = factor(plot_df$tissue, levels=tissue_levels, labels=tissue_labels)
 	tissue_colors_use = as.character(tissue_colors[tissue_levels])
 
@@ -1840,6 +1842,12 @@ if (any(!is.na(five_tissue_unbinned_ld_moments_df$std_borzoi_effect))) {
 	five_tissue_unbinned_causal_borzoi_output_file = paste0(visualization_dir, "causal_borzoi_five_tissue_unbinned_eqtl_effect_calibration.png")
 	ggsave(five_tissue_unbinned_causal_borzoi_output_file, five_tissue_unbinned_causal_borzoi_plot, width=9.0, height=2.4, dpi=300)
 	print(five_tissue_unbinned_causal_borzoi_output_file)
+
+	# Joint version: LD-propagated (a) stacked above causal (b)
+	joint_five_tissue_unbinned_plot = plot_grid(five_tissue_unbinned_ld_moment_plot, five_tissue_unbinned_causal_borzoi_plot, ncol=1, labels=c("a", "b"))
+	joint_five_tissue_unbinned_output_file = paste0(visualization_dir, "ld_moment_and_causal_borzoi_five_tissue_unbinned_eqtl_effect_calibration.png")
+	ggsave(joint_five_tissue_unbinned_output_file, joint_five_tissue_unbinned_plot, width=9.0, height=4.8, dpi=300)
+	print(joint_five_tissue_unbinned_output_file)
 } else {
 	print("WARNING: skipping the five-tissue causal Borzoi effect plot: no std_borzoi_effect values")
 }
