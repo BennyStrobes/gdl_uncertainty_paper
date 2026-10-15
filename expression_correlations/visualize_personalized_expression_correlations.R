@@ -14,6 +14,11 @@ figure_theme <- function() {
 fsr_bin_breaks = c(0, 0.1, 0.2, 0.3, 0.4, Inf)
 fsr_bin_labels = c("[0,0.1]", "(0.1,0.2]", "(0.2,0.3]", "(0.3,0.4]", ">0.4")
 
+# Predefined predicted-correlation bins for the binned version of the correlation calibration plots
+# (the default version uses equal-count bins by rank; see compute_predicted_r_bin_summary_df)
+predicted_r_bin_breaks = c(0, 0.1, 0.2, 0.3, 0.4, 0.6, Inf)
+predicted_r_bin_labels = c("[0,0.1]", "(0.1,0.2]", "(0.2,0.3]", "(0.3,0.4]", "(0.4,0.6]", ">0.6")
+
 # Heritable genes: cis-SNP heritability LRT p-value below this threshold
 heritability_pvalue_threshold = 0.05
 
@@ -225,21 +230,25 @@ make_overlaid_fsr_calibration_plot <- function(summary_df, tissue_colors, xlab) 
 	tissue_offsets = seq(-dodge_width/2, dodge_width/2, length.out=n_tissues)
 	summary_df$x_dodged = summary_df$x + tissue_offsets[as.integer(summary_df$tissue)]
 	segment_half_width = (dodge_width/(n_tissues - 1))*0.4
+	# Fit the y-axis to the data (top of the highest CI / expected-FSR segment), rounded up to the next 0.05
+	y_max = ceiling(max(c(summary_df$observed_fsr_ub, summary_df$observed_fsr, summary_df$expected_fsr), na.rm=TRUE)/0.05)*0.05
 
 	pp = ggplot(summary_df, aes(x=x_dodged, y=observed_fsr, color=tissue)) +
 		geom_segment(aes(x=x_dodged - segment_half_width, xend=x_dodged + segment_half_width, y=expected_fsr, yend=expected_fsr), linetype="dashed", linewidth=0.6, na.rm=TRUE) +
-		geom_line(aes(group=tissue), linewidth=0.5, alpha=0.6, na.rm=TRUE) +
 		geom_pointrange(aes(ymin=observed_fsr_lb, ymax=observed_fsr_ub), linewidth=0.6, na.rm=TRUE) +
 		geom_point(size=2.2, na.rm=TRUE) +
 		scale_color_manual(values=tissue_colors_use, name="Tissue") +
 		scale_x_continuous(breaks=seq_along(fsr_bin_labels), labels=fsr_bin_labels) +
-		scale_y_continuous(breaks=seq(0, 0.6, by=0.1)) +
-		coord_cartesian(ylim=c(0, 0.6)) +
+		scale_y_continuous(breaks=seq(0, 1, by=0.1), expand=expansion(mult=c(0, 0.03))) +
+		coord_cartesian(ylim=c(0, y_max)) +
+		guides(color=guide_legend(nrow=2, byrow=TRUE)) +
 		figure_theme() +
 		theme(
-			legend.position="right",
+			legend.position="bottom",
 			legend.title=element_text(face="bold"),
-			plot.margin=margin(8, 14, 8, 8)
+			legend.margin=margin(0, 0, 0, 0),
+			legend.key.height=unit(14, "pt"),
+			plot.margin=margin(8, 8, 4, 8)
 		) +
 		labs(x=xlab, y="Observed FSR")
 	return(pp)
@@ -446,10 +455,54 @@ add_predicted_expression_correlation_columns <- function(df) {
 }
 
 
-compute_predicted_r_bin_summary_df <- function(df, predicted_r_col, observed_r_col, observed_h2_col, n_bins, tissue_colors) {
-	# One row per (tissue, predicted-correlation bin). Within each tissue the genes are split by rank of
-	# predicted_r_col into n_bins equal-count bins; each row carries the bin's mean predicted correlation
-	# (with 95% CI) and the bin's observed correlation (with 95% CI), where the observed correlation is
+compute_predicted_r_bin_stats <- function(bin_df, predicted_r_col, observed_r_col, observed_h2_col, warning_prefix) {
+	# Summary of one predicted-correlation bin (see compute_predicted_r_bin_summary_df for the definitions):
+	# gene count, mean predicted correlation with SE, and observed correlation with SE. All NA for an empty bin.
+	n_genes = nrow(bin_df)
+	stats = list(n_genes=n_genes, mean_predicted=NA, mean_predicted_se=NA, mean_observed=NA, mean_observed_se=NA)
+	if (n_genes == 0) {
+		return(stats)
+	}
+	predicted_r = bin_df[[predicted_r_col]]
+	observed_r = bin_df[[observed_r_col]]
+	stats$mean_predicted = mean(predicted_r)
+	if (n_genes > 1) {
+		stats$mean_predicted_se = sd(predicted_r)/sqrt(n_genes)
+	}
+	if (is.null(observed_h2_col)) {
+		stats$mean_observed = mean(observed_r)
+		if (n_genes > 1) {
+			stats$mean_observed_se = sd(observed_r)/sqrt(n_genes)
+		}
+	} else {
+		observed_h2 = bin_df[[observed_h2_col]]
+		mean_r = mean(observed_r)
+		mean_h2 = mean(observed_h2)
+		if (mean_h2 > 0) {
+			stats$mean_observed = mean_r/sqrt(mean_h2)
+		} else {
+			print(paste0("WARNING: ", warning_prefix, ": mean ", observed_h2_col, " = ", mean_h2, " is not positive; observed r / sqrt(h2) set to NA"))
+		}
+		if (n_genes > 1 && mean_h2 > 0) {
+			var_mean_r = var(observed_r)/n_genes
+			var_mean_h2 = var(observed_h2)/n_genes
+			cov_mean_r_h2 = cov(observed_r, observed_h2)/n_genes
+			# Delta method for g(a, b) = a / sqrt(b): dg/da = 1/sqrt(b), dg/db = -a / (2 b^(3/2))
+			var_ratio = var_mean_r/mean_h2 - mean_r*cov_mean_r_h2/mean_h2^2 + mean_r^2*var_mean_h2/(4.0*mean_h2^3)
+			stats$mean_observed_se = sqrt(max(var_ratio, 0.0))
+		}
+	}
+	return(stats)
+}
+
+
+compute_predicted_r_bin_summary_df <- function(df, predicted_r_col, observed_r_col, observed_h2_col, n_bins, tissue_colors, bin_breaks=NULL, bin_labels=NULL) {
+	# One row per (tissue, predicted-correlation bin). Within each tissue the genes are split by predicted_r_col
+	# either into n_bins equal-count bins by rank (bin_breaks NULL; empty bins are dropped) or into the
+	# predefined bins given by bin_breaks/bin_labels (as cut(..., include.lowest=TRUE, right=TRUE); every bin
+	# is kept, an empty one with NA statistics, so the plots can show the gene count). Each row carries the
+	# bin's mean predicted correlation (with 95% CI) and the bin's observed correlation (with 95% CI), where
+	# the observed correlation is
 	#   mean(observed_r_col) / sqrt(mean(observed_h2_col))
 	# when observed_h2_col is given, and simply mean(observed_r_col) (empirical SE) when observed_h2_col is NULL.
 	# The square root is taken once, of the bin-mean heritability, rather than per gene: the per-gene h2
@@ -457,6 +510,7 @@ compute_predicted_r_bin_summary_df <- function(df, predicted_r_col, observed_r_c
 	# ratio. This also lets observed_h2_col be the unbiased Haseman-Elston estimate, which can be negative
 	# per gene; a bin whose mean heritability is not positive gets NA. SE by the delta method including the
 	# numerator-denominator covariance.
+	use_predefined_bins = !is.null(bin_breaks)
 	df = df[df$target_tissue %in% names(tissue_colors), ]
 	keep = !is.na(df[[predicted_r_col]]) & !is.na(df[[observed_r_col]])
 	if (!is.null(observed_h2_col)) {
@@ -479,60 +533,30 @@ compute_predicted_r_bin_summary_df <- function(df, predicted_r_col, observed_r_c
 		if (nrow(tissue_df) == 0) {
 			next
 		}
-		# Equal-count bins by rank (ties broken by order, so bin sizes differ by at most one gene)
-		tissue_df$r_bin = ceiling(rank(tissue_df[[predicted_r_col]], ties.method="first")*n_bins/nrow(tissue_df))
-		for (bin_iter in 1:n_bins) {
-			bin_df = tissue_df[tissue_df$r_bin == bin_iter, ]
-			n_genes = nrow(bin_df)
-			if (n_genes == 0) {
+		if (use_predefined_bins) {
+			tissue_df$r_bin = as.integer(cut(tissue_df[[predicted_r_col]], breaks=bin_breaks, labels=FALSE, include.lowest=TRUE, right=TRUE))
+			bin_iters = 1:length(bin_labels)
+		} else {
+			# Equal-count bins by rank (ties broken by order, so bin sizes differ by at most one gene)
+			tissue_df$r_bin = ceiling(rank(tissue_df[[predicted_r_col]], ties.method="first")*n_bins/nrow(tissue_df))
+			bin_iters = 1:n_bins
+		}
+		for (bin_iter in bin_iters) {
+			bin_df = tissue_df[!is.na(tissue_df$r_bin) & tissue_df$r_bin == bin_iter, ]
+			if (nrow(bin_df) == 0 && !use_predefined_bins) {
 				next
 			}
-			predicted_r = bin_df[[predicted_r_col]]
-			observed_r = bin_df[[observed_r_col]]
-			mean_predicted = mean(predicted_r)
-			if (n_genes > 1) {
-				mean_predicted_se = sd(predicted_r)/sqrt(n_genes)
-			} else {
-				mean_predicted_se = NA
-			}
-			if (is.null(observed_h2_col)) {
-				mean_observed = mean(observed_r)
-				if (n_genes > 1) {
-					mean_observed_se = sd(observed_r)/sqrt(n_genes)
-				} else {
-					mean_observed_se = NA
-				}
-			} else {
-				observed_h2 = bin_df[[observed_h2_col]]
-				mean_r = mean(observed_r)
-				mean_h2 = mean(observed_h2)
-				if (mean_h2 > 0) {
-					mean_observed = mean_r/sqrt(mean_h2)
-				} else {
-					print(paste0("WARNING: ", target_tissue, " ", predicted_r_col, " bin ", bin_iter, ": mean ", observed_h2_col, " = ", mean_h2, " is not positive; observed r / sqrt(h2) set to NA"))
-					mean_observed = NA
-				}
-				if (n_genes > 1 && mean_h2 > 0) {
-					var_mean_r = var(observed_r)/n_genes
-					var_mean_h2 = var(observed_h2)/n_genes
-					cov_mean_r_h2 = cov(observed_r, observed_h2)/n_genes
-					# Delta method for g(a, b) = a / sqrt(b): dg/da = 1/sqrt(b), dg/db = -a / (2 b^(3/2))
-					var_ratio = var_mean_r/mean_h2 - mean_r*cov_mean_r_h2/mean_h2^2 + mean_r^2*var_mean_h2/(4.0*mean_h2^3)
-					mean_observed_se = sqrt(max(var_ratio, 0.0))
-				} else {
-					mean_observed_se = NA
-				}
-			}
+			stats = compute_predicted_r_bin_stats(bin_df, predicted_r_col, observed_r_col, observed_h2_col, paste0(target_tissue, " ", predicted_r_col, " bin ", bin_iter))
 
 			tissue_arr = c(tissue_arr, target_tissue)
 			bin_arr = c(bin_arr, bin_iter)
-			n_gene_arr = c(n_gene_arr, n_genes)
-			mean_predicted_arr = c(mean_predicted_arr, mean_predicted)
-			mean_predicted_lb_arr = c(mean_predicted_lb_arr, mean_predicted - 1.96*mean_predicted_se)
-			mean_predicted_ub_arr = c(mean_predicted_ub_arr, mean_predicted + 1.96*mean_predicted_se)
-			mean_observed_arr = c(mean_observed_arr, mean_observed)
-			mean_observed_lb_arr = c(mean_observed_lb_arr, mean_observed - 1.96*mean_observed_se)
-			mean_observed_ub_arr = c(mean_observed_ub_arr, mean_observed + 1.96*mean_observed_se)
+			n_gene_arr = c(n_gene_arr, stats$n_genes)
+			mean_predicted_arr = c(mean_predicted_arr, stats$mean_predicted)
+			mean_predicted_lb_arr = c(mean_predicted_lb_arr, stats$mean_predicted - 1.96*stats$mean_predicted_se)
+			mean_predicted_ub_arr = c(mean_predicted_ub_arr, stats$mean_predicted + 1.96*stats$mean_predicted_se)
+			mean_observed_arr = c(mean_observed_arr, stats$mean_observed)
+			mean_observed_lb_arr = c(mean_observed_lb_arr, stats$mean_observed - 1.96*stats$mean_observed_se)
+			mean_observed_ub_arr = c(mean_observed_ub_arr, stats$mean_observed + 1.96*stats$mean_observed_se)
 		}
 	}
 	summary_df = data.frame(
@@ -546,6 +570,9 @@ compute_predicted_r_bin_summary_df <- function(df, predicted_r_col, observed_r_c
 		mean_observed_r_lb=as.numeric(mean_observed_lb_arr),
 		mean_observed_r_ub=as.numeric(mean_observed_ub_arr)
 	)
+	if (use_predefined_bins) {
+		summary_df$predicted_r_bin_label = factor(bin_labels[summary_df$predicted_r_bin], levels=bin_labels)
+	}
 	tissue_levels = names(tissue_colors)
 	summary_df$tissue = factor(summary_df$target_tissue, levels=tissue_levels, labels=gsub("_", " ", tissue_levels))
 	return(summary_df)
@@ -584,6 +611,42 @@ make_per_tissue_predicted_vs_observed_r_panel_plot <- function(summary_df, tissu
 	return(pp)
 }
 
+
+
+make_per_tissue_predicted_vs_observed_r_binned_panel_plot <- function(summary_df, tissue_colors, xlab, ylab, bin_labels) {
+	# Binned version of make_per_tissue_predicted_vs_observed_r_panel_plot, styled like the expression-FSR
+	# calibration plot: one panel per tissue (side by side), x-axis is the predefined predicted-correlation
+	# bin, observed correlation (points with 95% CI, joined by a line, colored by tissue) against the bin's
+	# mean predicted correlation (dashed segment).
+	reference_color = "#3F3F46"
+	tissue_colors_use = setNames(as.character(tissue_colors), gsub("_", " ", names(tissue_colors)))
+
+	# Fit the y-axis to the data (top of the highest CI / predicted segment), rounded up to the next 0.05,
+	# with about four tick marks
+	y_max = ceiling(max(c(summary_df$mean_observed_r_ub, summary_df$mean_observed_r, summary_df$mean_predicted_r), na.rm=TRUE)/0.05)*0.05
+	y_breaks = pretty(c(0, y_max), n=4)
+
+	pp = ggplot(summary_df, aes(x=predicted_r_bin, y=mean_observed_r, color=tissue)) +
+		geom_segment(aes(x=predicted_r_bin - 0.35, xend=predicted_r_bin + 0.35, y=mean_predicted_r, yend=mean_predicted_r), color=reference_color, linetype="dashed", linewidth=0.6, na.rm=TRUE) +
+		geom_line(linewidth=0.7, na.rm=TRUE) +
+		geom_pointrange(aes(ymin=mean_observed_r_lb, ymax=mean_observed_r_ub), linewidth=0.7, na.rm=TRUE) +
+		geom_point(size=2.4, na.rm=TRUE) +
+		facet_wrap(~tissue, nrow=1) +
+		scale_color_manual(values=tissue_colors_use) +
+		scale_x_continuous(breaks=seq_along(bin_labels), labels=bin_labels) +
+		scale_y_continuous(breaks=y_breaks, expand=expansion(mult=c(0.02, 0.03))) +
+		coord_cartesian(ylim=c(0, y_max)) +
+		figure_theme() +
+		theme(
+			legend.position="none",
+			strip.background=element_blank(),
+			strip.text=element_text(face="bold", size=11),
+			axis.text.x=element_text(angle=35, hjust=1, vjust=1, size=8),
+			panel.spacing=unit(0.8, "lines")
+		) +
+		labs(x=xlab, y=ylab)
+	return(pp)
+}
 
 
 compute_predicted_r_coverage_summary_df <- function(df, predicted_r_variance_col, coverage_levels, tissue_colors) {
@@ -912,6 +975,7 @@ observed_h2_ylab = "Observed cis-SNP heritability"
 observed_r_col = "rescaled_expression_correlation"
 predicted_genetic_r_definitions = c("predicted_genetic_r"="Predicted r with genetic expression", "predicted_genetic_r_af_specific"="Predicted r with genetic expression (AF-specific)")
 observed_genetic_r_ylab = "Observed r / sqrt(observed cis-SNP h2)"
+observed_genetic_r_binned_ylab = "Observed r / sqrt(h2)"
 predicted_expression_r_xlab = "Predicted r with observed expression"
 observed_expression_r_ylab = "Observed r with observed expression"
 
@@ -952,7 +1016,7 @@ for (gene_set_name in names(gene_sets)) {
 
 		# Calibration: all tissues overlaid in one panel
 		overlaid_calibration_plot = make_overlaid_fsr_calibration_plot(summary_df, five_tissue_colors, xlab)
-		ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_calibration_overlaid", file_suffix, ".pdf"), overlaid_calibration_plot, width=6.0, height=3.2)
+		ggsave(paste0(visualization_dir, "five_tissue_", fsr_col, "_calibration_overlaid", file_suffix, ".pdf"), overlaid_calibration_plot, width=6.0, height=3.8)
 
 		# Mean rescaled expression correlation in each expression-FSR bin
 		mean_correlation_plot = make_five_tissue_mean_correlation_bar_plot(summary_df, five_tissue_colors, xlab)
@@ -1009,6 +1073,15 @@ for (gene_set_name in names(gene_sets)) {
 			} else {
 				per_tissue_r_calibration_plot = make_per_tissue_predicted_vs_observed_r_panel_plot(r_summary_df, five_tissue_colors, predicted_genetic_r_definitions[[predicted_r_col]], observed_genetic_r_ylab)
 				ggsave(paste0(visualization_dir, "five_tissue_", predicted_r_col, "_calibration_per_tissue_panels", file_suffix, ".pdf"), per_tissue_r_calibration_plot, width=9.5, height=2.9)
+			}
+
+			# Binned version: predefined predicted-correlation bins on the x-axis (styled like the expression-FSR calibration plot)
+			r_binned_summary_df = compute_predicted_r_bin_summary_df(gene_set_df, predicted_r_col, observed_r_col, observed_h2_col, NULL, five_tissue_colors, bin_breaks=predicted_r_bin_breaks, bin_labels=predicted_r_bin_labels)
+			print(r_binned_summary_df)
+			write.table(r_binned_summary_df, paste0(visualization_dir, "five_tissue_", predicted_r_col, "_predefined_bin_summary", file_suffix, ".txt"), quote=FALSE, sep="\t", row.names=FALSE)
+			if (sum(r_binned_summary_df$n_genes) > 0) {
+				per_tissue_r_binned_calibration_plot = make_per_tissue_predicted_vs_observed_r_binned_panel_plot(r_binned_summary_df, five_tissue_colors, predicted_genetic_r_definitions[[predicted_r_col]], observed_genetic_r_binned_ylab, predicted_r_bin_labels)
+				ggsave(paste0(visualization_dir, "five_tissue_", predicted_r_col, "_calibration_per_tissue_panels_predefined_bins", file_suffix, ".pdf"), per_tissue_r_binned_calibration_plot, width=9.5, height=2.9)
 			}
 		}
 

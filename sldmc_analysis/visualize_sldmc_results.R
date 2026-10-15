@@ -1006,6 +1006,9 @@ make_simulation_estimate_bar_plot <- function(summary_df, oracle_df, ylab, bar_c
 	method_colors = c(fine_map_color, bar_color)
 	names(method_colors) = c(fine_map_label, "S-LDMC")
 
+	print(bar_df)
+	print(truth_df)
+
 	return(
 		ggplot(bar_df, aes(x=annotation_bin, y=mean, fill=method)) +
 		geom_col(position=position_dodge(width=.78), width=.68, color="#111827", linewidth=.25) +
