@@ -316,6 +316,49 @@ per_tissue_sldmc_magnitude_results <- function(sldmc_results_output_dir, tissue_
 }
 
 
+per_tissue_sldmc_fine_mapping_results <- function(sldmc_results_output_dir, tissue_info_df, tissue_names, annotation_version="fine_mapping", fine_mapping_annotation_name="susie_fine_mapped") {
+	# Same long data frame as per_tissue_sldmc_magnitude_results, but from the fine_mapping annotation
+	# version (annotate_variant_gene_pairs_by_fine_mapping.py), for the requested tissues only. Two rows
+	# per tissue: the intercept (all variant-gene pairs) and the fine_mapped category, in that order.
+	fine_mapping_categories = c("intercept", "fine_mapped")
+	results_df = data.frame()
+	for (row_iter in seq_len(nrow(tissue_info_df))) {
+		target_tissue = tissue_info_df$GTEx_tissue[row_iter]
+		if ((target_tissue %in% tissue_names) == FALSE) {
+			next
+		}
+		target_sample = tissue_info_df$target_identifier[row_iter]
+		stats_file = paste0(sldmc_results_output_dir, "sldmc_results_", target_tissue, "_", target_sample, "_", annotation_version, "_bootstrap_stats.txt")
+		if (file.exists(stats_file) == FALSE) {
+			print(paste("WARNING: per-tissue S-LDMC fine-mapping stats file not found; skipping:", stats_file))
+			next
+		}
+		tissue_df = read.table(stats_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
+		fine_mapping_df = tissue_df[(tissue_df$annotation_name == "intercept" & tissue_df$category_name == "intercept") | (tissue_df$annotation_name == fine_mapping_annotation_name & tissue_df$category_name == "fine_mapped"), ]
+		if (length(unique(fine_mapping_df$category_name)) != 2) {
+			print(paste("WARNING: missing intercept or", fine_mapping_annotation_name, "fine_mapped rows in", stats_file))
+			next
+		}
+
+		correlation_df = fine_mapping_df[fine_mapping_df$output_name == "correlation", c("category_name", "mean", "bootstrap_se")]
+		colnames(correlation_df) = c("category_name", "correlation", "correlation_se")
+		calibration_df = fine_mapping_df[fine_mapping_df$output_name == "calibration_slope", c("category_name", "mean", "bootstrap_se")]
+		colnames(calibration_df) = c("category_name", "calibration_slope", "calibration_slope_se")
+
+		merged_df = merge(correlation_df, calibration_df, by="category_name")
+		merged_df = merged_df[order(match(merged_df$category_name, fine_mapping_categories)), ]
+		merged_df$target_tissue = target_tissue
+		merged_df$target_sample = target_sample
+		merged_df = merged_df[, c("target_tissue", "target_sample", "category_name", "correlation", "correlation_se", "calibration_slope", "calibration_slope_se")]
+		results_df = rbind(results_df, merged_df)
+	}
+	if (nrow(results_df) == 0) {
+		stop(paste("No per-tissue S-LDMC fine-mapping results loaded from", sldmc_results_output_dir))
+	}
+	return(results_df)
+}
+
+
 make_per_tissue_magnitude_dot_plot <- function(df, value_col, ylab, point_color, bin_labels=NULL) {
 	# Jittered dot plot of a per-tissue S-LDMC estimate (correlation, calibration_slope, ...) across
 	# the borzoi magnitude bins (one dot per tissue per bin). Expects the long df from
@@ -354,7 +397,7 @@ make_per_tissue_magnitude_dot_plot <- function(df, value_col, ylab, point_color,
 }
 
 
-make_five_tissue_magnitude_bar_plot <- function(df, value_col, se_col, ylab, tissue_colors, y_limits=NULL, y_accuracy=.01, reference_line=NULL, truncation_note=NULL, bin_labels=NULL) {
+make_five_tissue_magnitude_bar_plot <- function(df, value_col, se_col, ylab, tissue_colors, y_limits=NULL, y_accuracy=.01, reference_line=NULL, truncation_note=NULL, bin_labels=NULL, xlab_title="Borzoi magnitude bin") {
 	# Grouped bar plot: x-axis is the borzoi magnitude bin, and within each magnitude bin one dodged
 	# bar per selected tissue (colored by tissue, with 95% Gaussian CI error bars). Expects the long df
 	# from per_tissue_sldmc_magnitude_results and a named vector mapping target_tissue -> bar color;
@@ -422,7 +465,7 @@ make_five_tissue_magnitude_bar_plot <- function(df, value_col, se_col, ylab, tis
 		scale_fill_manual(values=tissue_colors_use, name="Tissue") +
 		scale_y_continuous(labels=number_format(accuracy=y_accuracy)) +
 		scale_x_discrete(labels=bin_labels) +
-		xlab("Borzoi magnitude bin") +
+		xlab(xlab_title) +
 		ylab(ylab) +
 		figure_theme() +
 		theme(
@@ -435,7 +478,7 @@ make_five_tissue_magnitude_bar_plot <- function(df, value_col, se_col, ylab, tis
 }
 
 
-make_stacked_shared_x_plot <- function(top_plot, bottom_plot, panel_labels, shared_legend=TRUE, horizontal_x_labels=TRUE, per_panel_legends=FALSE) {
+make_stacked_shared_x_plot <- function(top_plot, bottom_plot, panel_labels, shared_legend=TRUE, horizontal_x_labels=TRUE, per_panel_legends=FALSE, legend_nrow=1) {
 	# Stack two plots that share the same x-axis into one figure: the top panel drops its (duplicated)
 	# x-axis title, tick labels and ticks, so the axis is drawn once under the bottom panel.
 	# shared_legend replaces the two per-panel legends with a single legend along the bottom (set FALSE
@@ -473,13 +516,14 @@ make_stacked_shared_x_plot <- function(top_plot, bottom_plot, panel_labels, shar
 	}
 	legend_source_plot = bottom_plot +
 		theme(legend.position="bottom", legend.title=element_blank(), legend.text=element_text(size=9), legend.margin=margin(0, 0, 0, 0)) +
-		guides(fill=guide_legend(nrow=1))
+		guides(fill=guide_legend(nrow=legend_nrow))
 	# ggplot2 >= 3.5 names the bottom guide box "guide-box-bottom"; older versions have a single "guide-box"
 	shared_legend_grob = tryCatch(get_plot_component(legend_source_plot, "guide-box-bottom"), error=function(e) NULL)
 	if (is.null(shared_legend_grob) || inherits(shared_legend_grob, "zeroGrob")) {
 		shared_legend_grob = get_plot_component(legend_source_plot, "guide-box")
 	}
-	return(plot_grid(stacked_panels, shared_legend_grob, nrow=2, rel_heights=c(1, .09)))
+	# Each extra legend row needs more room under the panels
+	return(plot_grid(stacked_panels, shared_legend_grob, nrow=2, rel_heights=c(1, .09*legend_nrow)))
 }
 
 
@@ -1599,6 +1643,22 @@ five_tissue_magnitude_calibration_plot = make_five_tissue_magnitude_bar_plot(per
 # Make joint calibration + correlation plot for the five tissues (shared x-axis and shared legend)
 joint_five_tissue_magnitude_plot = make_stacked_shared_x_plot(five_tissue_magnitude_calibration_plot, five_tissue_magnitude_correlation_plot, c("a", "b"))
 ggsave(paste0(visualization_dir, "sldmc_five_tissue_magnitude_correlation_calibration.pdf"), joint_five_tissue_magnitude_plot, width=7.2, height=4.6)
+
+
+########################
+# Correlation and calibration for the same 5 tissues: all variant-gene pairs (intercept) vs only those
+# confidently fine-mapped (SuSiE PIP > 0.9) in that tissue (fine_mapping annotation version)
+# x-axis is the set of variant-gene pairs, one bar per tissue (with 95% CI error bars)
+#######################
+fine_mapping_status_labels = c("All SNP-gene pairs", "Fine-mapped\n(PIP > 0.9)")
+per_tissue_sldmc_fine_mapping_df = per_tissue_sldmc_fine_mapping_results(sldmc_results_output_dir, tissue_info_df, names(five_tissue_colors))
+
+five_tissue_fine_mapping_correlation_plot = make_five_tissue_magnitude_bar_plot(per_tissue_sldmc_fine_mapping_df, "correlation", "correlation_se", "S-LDMC\nCorrelation", five_tissue_colors, y_accuracy=.1, bin_labels=fine_mapping_status_labels, xlab_title="SNP-gene pairs")
+five_tissue_fine_mapping_calibration_plot = make_five_tissue_magnitude_bar_plot(per_tissue_sldmc_fine_mapping_df, "calibration_slope", "calibration_slope_se", "S-LDMC\nCalibration coefficient", five_tissue_colors, y_accuracy=.1, reference_line=1, bin_labels=fine_mapping_status_labels, xlab_title="SNP-gene pairs")
+
+# Make joint calibration + correlation plot for the five tissues (shared x-axis and shared legend)
+joint_five_tissue_fine_mapping_plot = make_stacked_shared_x_plot(five_tissue_fine_mapping_calibration_plot, five_tissue_fine_mapping_correlation_plot, c("a", "b"), legend_nrow=2)
+ggsave(paste0(visualization_dir, "sldmc_five_tissue_fine_mapping_correlation_calibration.pdf"), joint_five_tissue_fine_mapping_plot, width=5.0, height=4.9)
 
 
 ########################

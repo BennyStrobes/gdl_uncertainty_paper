@@ -35,6 +35,9 @@ annotation_name_file="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_pape
 # Gene set anno file
 gene_set_anno_file="/lab-share/CHIP-Strober-e2/Public/gene_set_annotations/non_disease_specific_geneset.csv"
 
+# Fine-mapping summary file
+fine_mapping_summary_file="/lab-share/CHIP-Strober-e2/Public/GTEx/fine_mapping/v8/GTEx_49tissues_release1.tsv"
+
 # Directory containing SLDMC code
 sldmc_code_dir="/lab-share/CHIP-Strober-e2/Public/ben/SLDMC/"
 
@@ -170,6 +173,44 @@ fi
 
 
 #################
+# 7. Run fine-mapping based analysis
+#################
+
+# a. Fine-mapping annotation: variant-gene pair is 1 if SuSiE PIP > 0.9 in this tissue, 0 otherwise
+# (including pairs absent from the fine-mapping summary file). Written as a separate annotation
+# file (annotation_version "fine_mapping"), so it can be run through step 5's S-LDMC loop.
+if false; then
+tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
+	borzoi_effect_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
+	fine_mapping_annotation_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_annotations_fine_mapping.txt.gz"
+	sbatch annotate_variant_gene_pairs_by_fine_mapping.sh $borzoi_effect_file $fine_mapping_summary_file $target_tissue $fine_mapping_annotation_file
+done
+fi
+
+# b. Run S-LDMC on each tissue using the fine-mapping annotation file. Tissues without a fine-mapping
+# annotation file (e.g. not among the 49 fine-mapped GTEx tissues) are skipped.
+if false; then
+tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
+	eqtl_sumstats_file=$eqtl_sumstats_dir"eqtl_results_"${target_tissue}"_sumstats.txt.gz"
+	borzoi_effect_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
+	genotype_stem=$processed_genotype_data_dir"gtex_v9_eqtl_chr"
+	genotype_sample_mapping_file=$processed_genotype_data_dir"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
+
+	annotation_version="fine_mapping"
+	borzoi_annotation_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_annotations_"${annotation_version}".txt.gz"
+	if [ ! -f "$borzoi_annotation_file" ]; then
+		echo "Skipping "${target_tissue}": no fine-mapping annotation file"
+		continue
+	fi
+	sldmc_output_stem=${sldmc_results_output_dir}"sldmc_results_"${target_tissue}"_"${target_sample}"_"${annotation_version}
+	sbatch run_sldmc.sh $borzoi_effect_file $eqtl_sumstats_file $borzoi_annotation_file $genotype_stem $genotype_sample_mapping_file ${bootstrapped_cross_tissue_gene_sets_dir}"cross_tissue_gene_set_bootstrap_" $sldmc_output_stem $sldmc_code_dir
+done
+fi
+
+
+
+
+#################
 # 7. Extract ld first moments and sumstat for each tissue
 #################
 if false; then
@@ -190,10 +231,11 @@ fi
 #################
 # 8. Visualize results
 #################
+if false; then
 source ~/.bashrc
 conda activate plink_env
 Rscript visualize_sldmc_results.R ${sldmc_results_output_dir} $simulation_results_dir $borzoi_gtex_unique_target_names_file $visualize_sldmc_results_dir $annotation_name_file $simulation_oracle_results_dir $borzoi_output_dir $ld_moments_output_dir $simulation_fm_stratified_oracle_results_dir
-
+fi
 
 
 #################
