@@ -5,6 +5,7 @@
 # Directory of expression data
 gtex_expr_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/gtex_eqtl_expression_processing/residualized_expression/"
 
+
 # Directory containing genotype data
 processed_genotype_data_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/gtex_eqtl_expression_processing/plink_processed_genotype/"
 
