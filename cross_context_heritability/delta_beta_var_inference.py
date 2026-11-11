@@ -28,18 +28,8 @@ def delta_beta_var_inference(expression_1, expression_2, genotypes):
     sum_ky = np.sum(grm*yy)
     est = he_regression_slope(n_pairs, sum_k, sum_kk, sum_y, sum_ky)
 
-    # Leave-one-individual-out jackknife (dropping individual i removes row i and column i)
-    jk_n_pairs = (n_samples - 1)*(n_samples - 2)
-    jk_sum_k = sum_k - 2.0*np.sum(grm, axis=1)
-    jk_sum_kk = sum_kk - 2.0*np.sum(np.square(grm), axis=1)
-    jk_sum_y = sum_y - 2.0*np.sum(yy, axis=1)
-    jk_sum_ky = sum_ky - 2.0*np.sum(grm*yy, axis=1)
-    jk_est = he_regression_slope(jk_n_pairs, jk_sum_k, jk_sum_kk, jk_sum_y, jk_sum_ky)
-    # Note: the delete-one jackknife overestimates the variance of this quadratic-form estimator (it roughly
-    # double counts the pairwise noise term), so it is returned only for comparison
-    est_jk_se = np.sqrt((n_samples - 1.0)/n_samples*np.sum(np.square(jk_est - np.mean(jk_est))))
-
-    # Analytic SE: with intercept, est = y^T A y / sum(A^2), where A_ij = GRM_ij - mean off-diagonal GRM
+    # Analytic SE (note: a delete-one jackknife overestimates the variance of this quadratic-form estimator,
+    # roughly double counting the pairwise noise term, so it is not used): with intercept, est = y^T A y / sum(A^2), where A_ij = GRM_ij - mean off-diagonal GRM
     # (i != j) and A_ii = 0. For Gaussian y with covariance V, Var(y^T A y) = 2*tr(AVAV).
     # V is the plug-in fitted covariance: sigma_g^2 * GRM + sigma_e^2 * I
     a_mat = grm - sum_k/n_pairs
@@ -61,4 +51,4 @@ def delta_beta_var_inference(expression_1, expression_2, genotypes):
     # One-sided p-value (H1: genetic variance of delta_expr > 0)
     est_p = scipy.stats.norm.sf(est/est_se)
 
-    return est, est_se, est_ci, est_p, est_jk_se
+    return est, est_se, est_ci, est_p

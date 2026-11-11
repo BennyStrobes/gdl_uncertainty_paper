@@ -123,7 +123,7 @@ snps_per_gene = 500
 # Create output file
 simulation_output_file = simulation_dir + 'no_ld_simulation_results_' + str(sample_size) + '.txt'
 t = open(simulation_output_file,'w')
-t.write("gene_iter\ttrue_delta_beta_var\ttrue_beta1_var\ttrue_beta2_var\test_delta_beta_var\test_delta_beta_var_se\test_delta_beta_var_ci_lb\test_delta_beta_var_ci_ub\test_delta_beta_var_p\test_delta_beta_var_jk_se\n")
+t.write("gene_iter\ttrue_delta_beta_var\ttrue_beta1_var\ttrue_beta2_var\test_delta_beta_var\test_delta_beta_var_se\test_delta_beta_var_ci_lb\test_delta_beta_var_ci_ub\test_delta_beta_var_p\n")
 
 for gene_iter in range(n_genes):
     # Generate simulated data
@@ -135,10 +135,10 @@ for gene_iter in range(n_genes):
     true_beta2_var = np.var(genetic_comp_2)
 
     # Infer Var(\beta1 - \beta2)
-    est_delta_beta_var, est_delta_beta_var_se, est_delta_beta_var_ci, est_delta_beta_var_p, est_delta_beta_var_jk_se = delta_beta_var_inference(expression_1, expression_2, genotypes)
+    est_delta_beta_var, est_delta_beta_var_se, est_delta_beta_var_ci, est_delta_beta_var_p = delta_beta_var_inference(expression_1, expression_2, genotypes)
 
     # print simulation results
-    t.write(str(gene_iter) + "\t" + str(true_delta_beta_var) + "\t" + str(true_beta1_var) + "\t" + str(true_beta2_var) + "\t" + str(est_delta_beta_var) + "\t" + str(est_delta_beta_var_se) + "\t" + str(est_delta_beta_var_ci[0]) + "\t" + str(est_delta_beta_var_ci[1]) + "\t" + str(est_delta_beta_var_p) + "\t" + str(est_delta_beta_var_jk_se) + "\n")
+    t.write(str(gene_iter) + "\t" + str(true_delta_beta_var) + "\t" + str(true_beta1_var) + "\t" + str(true_beta2_var) + "\t" + str(est_delta_beta_var) + "\t" + str(est_delta_beta_var_se) + "\t" + str(est_delta_beta_var_ci[0]) + "\t" + str(est_delta_beta_var_ci[1]) + "\t" + str(est_delta_beta_var_p) + "\n")
 t.close()
 
 
@@ -149,7 +149,7 @@ t.close()
 # Create output file
 simulation_output_file = simulation_dir + 'no_ld_null_simulation_results_' + str(sample_size) + '.txt'
 t = open(simulation_output_file,'w')
-t.write("gene_iter\ttrue_delta_beta_var\ttrue_beta1_var\ttrue_beta2_var\test_delta_beta_var\test_delta_beta_var_se\test_delta_beta_var_ci_lb\test_delta_beta_var_ci_ub\test_delta_beta_var_p\test_delta_beta_var_jk_se\n")
+t.write("gene_iter\ttrue_delta_beta_var\ttrue_beta1_var\ttrue_beta2_var\test_delta_beta_var\test_delta_beta_var_se\test_delta_beta_var_ci_lb\test_delta_beta_var_ci_ub\test_delta_beta_var_p\n")
 
 for gene_iter in range(n_genes):
     # Generate simulated data
@@ -161,8 +161,8 @@ for gene_iter in range(n_genes):
     true_beta2_var = np.var(genetic_comp_2)
 
     # Infer Var(\beta1 - \beta2)
-    est_delta_beta_var, est_delta_beta_var_se, est_delta_beta_var_ci, est_delta_beta_var_p, est_delta_beta_var_jk_se = delta_beta_var_inference(expression_1, expression_2, genotypes)
+    est_delta_beta_var, est_delta_beta_var_se, est_delta_beta_var_ci, est_delta_beta_var_p = delta_beta_var_inference(expression_1, expression_2, genotypes)
 
     # print simulation results
-    t.write(str(gene_iter) + "\t" + str(true_delta_beta_var) + "\t" + str(true_beta1_var) + "\t" + str(true_beta2_var) + "\t" + str(est_delta_beta_var) + "\t" + str(est_delta_beta_var_se) + "\t" + str(est_delta_beta_var_ci[0]) + "\t" + str(est_delta_beta_var_ci[1]) + "\t" + str(est_delta_beta_var_p) + "\t" + str(est_delta_beta_var_jk_se) + "\n")
+    t.write(str(gene_iter) + "\t" + str(true_delta_beta_var) + "\t" + str(true_beta1_var) + "\t" + str(true_beta2_var) + "\t" + str(est_delta_beta_var) + "\t" + str(est_delta_beta_var_se) + "\t" + str(est_delta_beta_var_ci[0]) + "\t" + str(est_delta_beta_var_ci[1]) + "\t" + str(est_delta_beta_var_p) + "\n")
 t.close()
