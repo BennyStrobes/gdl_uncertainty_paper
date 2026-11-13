@@ -11,11 +11,11 @@ residual_expression_file="${3}"
 gtex_v10_pc_genes_gtf="${4}"
 gtex_donor_info_file="${5}"
 genotype_fam_file="${6}"
-
+ancestry_label="${7}"
 
 source ~/.bashrc
 conda activate plink_env
 
 
 
-python residualize_expression.py $input_expression_file $input_covariate_file $residual_expression_file $gtex_v10_pc_genes_gtf $gtex_donor_info_file $genotype_fam_file
+python residualize_expression.py $input_expression_file $input_covariate_file $residual_expression_file $gtex_v10_pc_genes_gtf $gtex_donor_info_file $genotype_fam_file $ancestry_label

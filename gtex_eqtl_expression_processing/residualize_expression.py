@@ -113,6 +113,7 @@ residual_expression_file = sys.argv[3]
 gtex_v10_pc_genes_gtf = sys.argv[4]
 gtex_donor_info_file = sys.argv[5]
 genotype_fam_file = sys.argv[6]
+ancestry_label_str = sys.argv[7]
 
 protein_coding_genes_dictionary = extract_dictionary_list_of_protein_coding_genes(gtex_v10_pc_genes_gtf)
 gtex_id_to_ancestry_labels = load_in_ancestry_labels(gtex_donor_info_file)
@@ -126,7 +127,7 @@ cov_mat, ordered_cov_sample_names, ordered_cov_names = load_in_covariate_data(in
 # Filter to european samples
 european_samples = []
 for sample_name in ordered_cov_sample_names:
-	if gtex_id_to_ancestry_labels[sample_name] == 'EUR':
+	if gtex_id_to_ancestry_labels[sample_name] == ancestry_label_str:
 		if sample_name not in genotyped_individuals:
 			european_samples.append(False)
 			print('missing genotyped individual: ' + sample_name)
@@ -140,10 +141,36 @@ print(np.sum(european_samples)/len(european_samples))
 
 cov_mat = cov_mat[:, european_samples]
 ordered_cov_sample_names = ordered_cov_sample_names[european_samples]
+
+# For non-European subsets (small N), cap the number of PEER factors (InferredCov*)
+# using the GTEx scheme applied to the subset sample size (15 if N<150, 30 if N<250, 45 if N<350, else 60).
+# European analysis is left unchanged.
+if ancestry_label_str != 'EUR':
+	n_subset_samples = cov_mat.shape[1]
+	if n_subset_samples < 150:
+		max_peer = 15
+	elif n_subset_samples < 250:
+		max_peer = 30
+	elif n_subset_samples < 350:
+		max_peer = 45
+	else:
+		max_peer = 60
+	peer_indices = np.asarray([cov_name.startswith('InferredCov') for cov_name in ordered_cov_names])
+	if np.sum(peer_indices) == 0:
+		print('assumption error: no PEER (InferredCov) covariates found')
+		pdb.set_trace()
+	keep_cov = np.ones(len(ordered_cov_names), dtype=bool)
+	for cov_index, cov_name in enumerate(ordered_cov_names):
+		if peer_indices[cov_index] and int(cov_name[len('InferredCov'):]) > max_peer:
+			keep_cov[cov_index] = False
+	cov_mat = cov_mat[keep_cov, :]
+	ordered_cov_names = ordered_cov_names[keep_cov]
+	print('N=' + str(n_subset_samples) + ' samples; keeping ' + str(np.sum(peer_indices[keep_cov])) + ' of ' + str(np.sum(peer_indices)) + ' PEER factors')
+	print('Covariates used: ' + ','.join(ordered_cov_names))
+
 cov_design = np.transpose(cov_mat)
 intercept = np.ones((cov_design.shape[0], 1))
 cov_design = np.hstack((intercept, cov_design))
-
 
 
 ###############################
