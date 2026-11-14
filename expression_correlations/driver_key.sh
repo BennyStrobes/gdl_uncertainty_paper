@@ -118,9 +118,9 @@ fi
 # (b) EUR vs AFR comparisons (mean predicted / observed r, per-gene scatters, portability), against the
 #     European all-sample-fit results (same residualization as AFR), not the Part A results
 #########################
+if false; then
 source ~/.bashrc
 conda activate plink_env
 Rscript visualize_personalized_expression_correlations.R $afr_per_tissue_personalized_expression_dir $borzoi_gtex_unique_target_names_file $visualize_afr_personalized_expression_dir
 Rscript visualize_african_personalized_expression_correlations.R $eur_allfit_per_tissue_personalized_expression_dir $afr_per_tissue_personalized_expression_dir $borzoi_gtex_unique_target_names_file $visualize_afr_personalized_expression_dir
-
-
+fi

@@ -102,11 +102,13 @@ merge_eur_afr_results <- function(eur_df, afr_df) {
 	# One row per (tissue, gene) analyzed in both ancestries, with _eur / _afr columns. Adds the predicted
 	# correlation with observed expression, sqrt(Var_i(X mu)), computed in each ancestry's own samples, and
 	# keeps only genes with finite predicted and observed correlations in both.
-	keep_cols = c("target_tissue", "gene_id", observed_r_col, "rescaled_predicted_expression_variance", "predicted_cis_snp_h2", "predicted_cis_snp_h2_af_specific", "cis_snp_h2_pvalue", "n_samples", "n_cis_variants")
+	keep_cols = c("target_tissue", "gene_id", observed_r_col, "rescaled_predicted_expression_variance", "predicted_cis_snp_h2", "predicted_cis_snp_h2_af_specific", "expression_FSR_af_specific", "cis_snp_h2_pvalue", "n_samples", "n_cis_variants")
 	merged_df = merge(eur_df[, keep_cols], afr_df[, keep_cols], by=c("target_tissue", "gene_id"), suffixes=c("_eur", "_afr"))
 	for (suffix in c("_eur", "_afr")) {
 		merged_df[[paste0("predicted_r", suffix)]] = sqrt(merged_df[[paste0("rescaled_predicted_expression_variance", suffix)]])
 		merged_df[[paste0("observed_r", suffix)]] = merged_df[[paste0(observed_r_col, suffix)]]
+		# Expected correlation with genetic expression (AF-specific): sqrt(Var_i(X mu) / predicted cis-SNP h2 (AF-specific))
+		merged_df[[paste0("predicted_genetic_r_af_specific", suffix)]] = sqrt(merged_df[[paste0("rescaled_predicted_expression_variance", suffix)]]/merged_df[[paste0("predicted_cis_snp_h2_af_specific", suffix)]])
 	}
 	complete = is.finite(merged_df$predicted_r_eur) & is.finite(merged_df$predicted_r_afr) & is.finite(merged_df$observed_r_eur) & is.finite(merged_df$observed_r_afr)
 	print(paste("Genes analyzed in both ancestries:", nrow(merged_df), "; with finite predicted and observed correlations in both:", sum(complete)))
@@ -608,6 +610,83 @@ make_two_row_predicted_r_binned_panel_plot <- function(summary_df, tissue_colors
 
 
 
+compute_paired_eur_vs_afr_test_df <- function(merged_df, eur_col, afr_col, tissue_colors) {
+	# Per tissue, over genes with finite values in both ancestries: gene count, mean and median in each
+	# ancestry, and the two-sided paired Wilcoxon signed-rank test of EUR vs AFR (same genes in both)
+	rows = list()
+	for (target_tissue in names(tissue_colors)) {
+		tissue_df = merged_df[merged_df$target_tissue == target_tissue, ]
+		valid = is.finite(tissue_df[[eur_col]]) & is.finite(tissue_df[[afr_col]])
+		eur_vals = tissue_df[[eur_col]][valid]
+		afr_vals = tissue_df[[afr_col]][valid]
+		pvalue = NA
+		if (sum(valid) >= 3) {
+			pvalue = wilcox.test(eur_vals, afr_vals, paired=TRUE, exact=FALSE)$p.value
+		}
+		rows[[length(rows) + 1]] = data.frame(
+			target_tissue=target_tissue,
+			n_genes=sum(valid),
+			mean_eur=ifelse(sum(valid) > 0, mean(eur_vals), NA),
+			mean_afr=ifelse(sum(valid) > 0, mean(afr_vals), NA),
+			median_eur=ifelse(sum(valid) > 0, median(eur_vals), NA),
+			median_afr=ifelse(sum(valid) > 0, median(afr_vals), NA),
+			paired_wilcoxon_pvalue=pvalue,
+			stringsAsFactors=FALSE
+		)
+	}
+	return(do.call(rbind, rows))
+}
+
+
+make_two_row_eur_vs_afr_histogram_plot <- function(merged_df, eur_col, afr_col, test_df, tissue_colors, tissue_labels, xlab, binwidth) {
+	# Histograms of a per-gene quantity with one row per ancestry (European on top, African below) and one
+	# column per tissue, over genes with finite values in both ancestries (same genes in both rows). The dashed
+	# line marks each panel's median. Column titles carry the tissue, sample sizes and the paired Wilcoxon p-value.
+	long_rows = list()
+	for (population in population_levels) {
+		value_col = ifelse(population == "EUR", eur_col, afr_col)
+		valid = is.finite(merged_df[[eur_col]]) & is.finite(merged_df[[afr_col]]) & merged_df$target_tissue %in% names(tissue_colors)
+		long_rows[[population]] = data.frame(target_tissue=merged_df$target_tissue[valid], population=population, value=merged_df[[value_col]][valid], stringsAsFactors=FALSE)
+	}
+	plot_df = do.call(rbind, long_rows)
+	if (nrow(plot_df) == 0) {
+		return(NULL)
+	}
+
+	# Column titles: tissue (with sample sizes) and the paired test p-value
+	column_labels = c()
+	for (target_tissue in names(tissue_colors)) {
+		pvalue = test_df$paired_wilcoxon_pvalue[test_df$target_tissue == target_tissue]
+		pvalue_str = ifelse(is.na(pvalue), "NA", format.pval(pvalue, digits=2, eps=1e-300))
+		column_labels[target_tissue] = paste0(tissue_labels[[target_tissue]], "\npaired Wilcoxon p = ", pvalue_str)
+	}
+	present_tissues = names(tissue_colors)[names(tissue_colors) %in% plot_df$target_tissue]
+	plot_df$tissue = factor(plot_df$target_tissue, levels=present_tissues, labels=column_labels[present_tissues])
+	plot_df$population = factor(plot_df$population, levels=population_levels, labels=population_legend_labels[population_levels])
+	median_df = aggregate(value ~ tissue + population, data=plot_df, FUN=median)
+	tissue_colors_use = setNames(as.character(tissue_colors[present_tissues]), column_labels[present_tissues])
+
+	pp = ggplot(plot_df, aes(x=value, fill=tissue)) +
+		geom_histogram(binwidth=binwidth, boundary=0, color=NA) +
+		geom_vline(data=median_df, aes(xintercept=value), color=reference_color, linetype="dashed", linewidth=0.5) +
+		facet_grid(population ~ tissue) +
+		scale_fill_manual(values=tissue_colors_use, guide="none") +
+		figure_theme() +
+		theme(
+			strip.background=element_blank(),
+			strip.text.x=element_text(face="bold", size=9),
+			strip.text.y=element_text(face="bold", size=11),
+			axis.text=element_text(size=9),
+			panel.spacing=unit(0.8, "lines")
+		) +
+		labs(x=xlab, y="Number of genes")
+	return(pp)
+}
+
+
+
+
+
 #####################
 # Command line args
 #####################
@@ -672,6 +751,32 @@ print(two_row_fsr_summary_df)
 write.table(two_row_fsr_summary_df, paste0(visualization_dir, "five_tissue_eur_vs_afr_", two_row_fsr_col, "_bin_summary_own_ancestry_heritable.txt"), quote=FALSE, sep="\t", row.names=FALSE)
 two_row_fsr_plot = make_two_row_fsr_calibration_panel_plot(two_row_fsr_summary_df, five_tissue_colors, tissue_labels, "Expression-FSR (AF-specific)")
 ggsave(paste0(visualization_dir, "five_tissue_eur_vs_afr_", two_row_fsr_col, "_calibration_per_tissue_panels_own_ancestry_heritable.pdf"), two_row_fsr_plot, width=10.0, height=5.6)
+
+
+#####################
+# Two-row histograms (European top, African bottom) of per-gene expected quantities under the AF-specific
+# model, over all genes compared in both ancestries, with a paired Wilcoxon signed-rank test per tissue:
+#   (1) expected FSR (expression_FSR_af_specific)
+#   (2) expected correlation with genetic expression (predicted_genetic_r_af_specific)
+#####################
+histogram_definitions = list(
+	expression_FSR_af_specific=list(xlab="Expected FSR (AF-specific)", binwidth=0.01),
+	predicted_genetic_r_af_specific=list(xlab="Expected r with genetic expression (AF-specific)", binwidth=0.02)
+)
+for (histogram_col in names(histogram_definitions)) {
+	eur_col = paste0(histogram_col, "_eur")
+	afr_col = paste0(histogram_col, "_afr")
+	print(paste("Plotting EUR vs AFR histogram of", histogram_col, "for all genes compared in both ancestries"))
+	test_df = compute_paired_eur_vs_afr_test_df(merged_df, eur_col, afr_col, five_tissue_colors)
+	print(test_df)
+	write.table(test_df, paste0(visualization_dir, "five_tissue_eur_vs_afr_", histogram_col, "_paired_test_all_genes.txt"), quote=FALSE, sep="\t", row.names=FALSE)
+	histogram_plot = make_two_row_eur_vs_afr_histogram_plot(merged_df, eur_col, afr_col, test_df, five_tissue_colors, tissue_labels, histogram_definitions[[histogram_col]]$xlab, histogram_definitions[[histogram_col]]$binwidth)
+	if (is.null(histogram_plot)) {
+		print(paste("WARNING: no genes with", histogram_col, "in both ancestries; skipping the histogram"))
+	} else {
+		ggsave(paste0(visualization_dir, "five_tissue_eur_vs_afr_", histogram_col, "_histogram_all_genes.pdf"), histogram_plot, width=10.5, height=5.6)
+	}
+}
 
 
 #####################
