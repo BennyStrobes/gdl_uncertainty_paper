@@ -120,6 +120,9 @@ fi
 
 ############################
 # 1. Residualize expression (ie. remove covariates)
+# Covariate effects (full GTEx covariate set) are fit on ALL samples of the tissue, then residuals are
+# subset to AFR (and, separately, EUR) individuals and standardized within ancestry.
+# The EUR output (.v8_eur_allfit.) is a separate file; Part A's EUR files are not touched.
 ############################
 if false; then
 tail -n +2 "$borzoi_gtex_independent_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_identifier target_description gtex_tissue; do
@@ -129,9 +132,11 @@ tail -n +2 "$borzoi_gtex_independent_target_names_file" | while IFS=$'\t' read -
 	input_covariate_file=${gtex_v8_covariate_dir}${gtex_tissue}".v8.covariates.txt"
 
 	afr_residual_expression_file=${residualized_expression_dir}${gtex_tissue}".v8_afr.residualized_expression_renormalized.bed"
-	sbatch residualize_expression.sh $input_expression_file $input_covariate_file $afr_residual_expression_file $gtex_v10_pc_genes_gtf $gtex_donor_info_file $genotype_fam_file "AFR"
+	eur_allfit_residual_expression_file=${residualized_expression_dir}${gtex_tissue}".v8_eur_allfit.residualized_expression_renormalized.bed"
+	sbatch residualize_expression_all_sample_fit.sh $input_expression_file $input_covariate_file $afr_residual_expression_file $eur_allfit_residual_expression_file $gtex_v10_pc_genes_gtf $gtex_donor_info_file $genotype_fam_file
 done
 fi
+
 
 ############################
 # 2. Create mapping of ordered genotype indices for each tissue
@@ -142,8 +147,20 @@ tail -n +2 "$borzoi_gtex_independent_target_names_file" | while IFS=$'\t' read -
 	residual_expression_file=${residualized_expression_dir}${gtex_tissue}".v8_afr.residualized_expression_renormalized.bed"
 	genotype_mapping_file=$plink_genotype_data_dir"genotype_sample_mapping_to_"${gtex_tissue}"_afr_expression_samples.txt"
 	sh create_genotype_sample_mapping.sh $residual_expression_file $plink_genotype_data_dir"gtex_v9_eqtl_chr1.fam" $genotype_mapping_file
+
+	# EUR (all-sample covariate fit): should have identical samples/order to Part A EUR, so Part A's EUR mapping can be reused. Verify.
+	eur_allfit_residual_expression_file=${residualized_expression_dir}${gtex_tissue}".v8_eur_allfit.residualized_expression_renormalized.bed"
+	eur_allfit_genotype_mapping_file=$plink_genotype_data_dir"genotype_sample_mapping_to_"${gtex_tissue}"_eur_allfit_expression_samples.txt"
+	sh create_genotype_sample_mapping.sh $eur_allfit_residual_expression_file $plink_genotype_data_dir"gtex_v9_eqtl_chr1.fam" $eur_allfit_genotype_mapping_file
+	eur_genotype_mapping_file=$plink_genotype_data_dir"genotype_sample_mapping_to_"${gtex_tissue}"_expression_samples.txt"
+	if cmp -s $eur_allfit_genotype_mapping_file $eur_genotype_mapping_file; then
+		echo "EUR allfit sample mapping matches Part A"
+	else
+		echo "WARNING: EUR allfit sample mapping differs from Part A for "$gtex_tissue
+	fi
 done
 fi
+
 
 ############################
 # 3. Run Simple eQTL analsysis
