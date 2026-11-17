@@ -11,19 +11,18 @@ borzoi_gtex_independent_target_names_file=${borzoi_results_dir}"targets_gtex_onl
 borzoi_gtex_independent_target_names_file=${borzoi_results_dir}"targets_gtex_only_unique_ordered.txt"
 
 
-
 # Directory containing genotype data
-plink2_genotype_data_dir="/lab-share/CHIP-Strober-e2/Public/ben/process_gtex_genotype_data/processed_genotype/"
+# Suffix is .bim, .bed, .fam
+input_plink_genotype_file_stem="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/josh_popp_processed_eqtl_expression_data/genotype/GTEx_Analysis_2017-06-05_v8_WholeGenomeSeq_838Indiv_Analysis_Freeze.SHAPEIT2_phased.MAF01"
 
 # Gtex donor attributes (has ancestry)
 gtex_donor_info_file="/lab-share/CHIP-Strober-e2/Public/GTEx/expression/v8_per_tissue_expression/covariates/GTEx_Analysis_2017-06-05_v8_WholeGenomeSeq_899Indiv_QC_TABLE.tsv"
 
 # GTex v8 per tissue expression
-gtex_v8_expression_dir="/lab-share/CHIP-Strober-e2/Public/GTEx/expression/v8_per_tissue_expression/GTEx_Analysis_v8_eQTL_expression_matrices/"
+gtex_v8_expression_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/josh_popp_processed_eqtl_expression_data/expression/"
 
 # GTEx v8 covariate dir
-gtex_v8_covariate_dir="/lab-share/CHIP-Strober-e2/Public/GTEx/expression/v8_per_tissue_expression/covariates/GTEx_Analysis_v8_eQTL_covariates/"
-
+gtex_v8_covariate_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/josh_popp_processed_eqtl_expression_data/covariates/"
 
 
 # Directory containing eQTL summary statistics
@@ -55,10 +54,10 @@ eQTL_results_dir=${output_root_dir}"eqtl_results/"
 
 
 ############################
-# 0. Convert plink2 to plink genotype
+# 0. Convert plink genome wide genotype data into one plink file per chromosome
 ############################
 if false; then
-sbatch convert_plink2_to_plink_genotype_files.sh $plink2_genotype_data_dir $plink_genotype_data_dir
+sh split_genotype_data_into_chromosomes.sh $input_plink_genotype_file_stem $plink_genotype_data_dir
 fi
 
 
