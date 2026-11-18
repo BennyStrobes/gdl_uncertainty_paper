@@ -3,6 +3,8 @@ import os
 import sys
 import pdb
 import gzip
+import glob
+import h5py
 
 
 # Part B residualization.
@@ -41,23 +43,58 @@ def load_in_covariate_data(input_covariate_file):
 	return cov_mat, sample_names, cov_names
 
 
-def extract_dictionary_list_of_protein_coding_genes(pc_genes_gtf):
+def extract_dictionary_list_of_gtf_genes(pc_genes_gtf):
 	valid_chroms = {}
 	for chrom_num in range(1,23):
 		valid_chroms['chr' + str(chrom_num)] = 1
 
+
 	f = open(pc_genes_gtf)
+
 	dicti = {}
 	for line in f:
+		if line.startswith('#'):
+			continue
 		line = line.rstrip()
 		data = line.split('\t')
 		if data[0] not in valid_chroms:
 			continue
-		ens_id = data[8].split(';')[0].split('"')[1]
+		if data[2] != 'gene':
+			continue
+
+		# Parse attribute field (e.g. 'gene_id "ENSG..."; gene_type "protein_coding"; ...')
+		attributes = {}
+		for attr in data[8].split(';'):
+			attr = attr.strip()
+			if attr == '':
+				continue
+			key, value = attr.split(' ', 1)
+			attributes[key] = value.strip('"')
+
+		# Only keep protein coding genes
+		'''
+		if attributes['gene_type'] != 'protein_coding':
+			continue
+		'''
+			
+		ens_id = attributes['gene_id']
 		if ens_id.startswith('ENSG') == False:
 			print('assumption oernroro')
 			pdb.set_trace()
-		dicti[ens_id.split('.')[0]] = 1
+		if ens_id.split('.')[0] in dicti:
+			print('repeat gene error')
+			pdb.set_trace()
+		# TSS is gene start on + strand and gene end on - strand (1-based gtf coordinates)
+		strand = data[6]
+		if strand == '+':
+			tss = int(data[3])
+		elif strand == '-':
+			tss = int(data[4])
+		else:
+			print('strand assumption error')
+			pdb.set_trace()
+		dicti[ens_id.split('.')[0]] = (data[0], tss, strand)
+
 	f.close()
 
 	return dicti
@@ -111,6 +148,34 @@ def load_in_genotyped_individuals(genotype_fam_file):
 	return genotyped_individuals
 
 
+def extract_dictionary_of_borzoi_genes(borzoi_results_dir, chunk_size=5000000):
+	# Same borzoi output files as sldmc_analysis/preprocess_borzoi_data_for_sldmc.py
+	file_pattern = os.path.join(borzoi_results_dir, 'model_0_chunk_*_borzoi_gtex_only_results.h5')
+	borzoi_input_files = sorted(glob.glob(file_pattern))
+	if len(borzoi_input_files) == 0:
+		print('assumption error: no borzoi result files found matching ' + file_pattern)
+		pdb.set_trace()
+
+	dicti = {}
+	for borzoi_input_file in borzoi_input_files:
+		with h5py.File(borzoi_input_file, 'r') as f:
+			gene_ds = f['gene']
+			n_rows = gene_ds.shape[0]
+			# Only read the gene column, in slices (one row per variant-gene pair, so this is large)
+			for start in range(0, n_rows, chunk_size):
+				end = min(start + chunk_size, n_rows)
+				unique_genes = np.unique(gene_ds[start:end])
+				for gene_id in unique_genes:
+					if isinstance(gene_id, bytes):
+						gene_id = gene_id.decode('utf-8')
+					if gene_id.startswith('ENSG') == False:
+						print('assumption error: unexpected borzoi gene id ' + gene_id)
+						pdb.set_trace()
+					dicti[gene_id.split('.')[0]] = 1
+	print('number of genes with a borzoi prediction: ' + str(len(dicti)))
+	return dicti
+
+
 def get_ancestry_sample_mask(ordered_sample_names, gtex_id_to_ancestry_labels, genotyped_individuals, ancestry_label):
 	mask = []
 	for sample_name in ordered_sample_names:
@@ -141,11 +206,13 @@ input_expression_file = sys.argv[1]
 input_covariate_file = sys.argv[2]
 afr_residual_expression_file = sys.argv[3]
 eur_residual_expression_file = sys.argv[4]
-gtex_v10_pc_genes_gtf = sys.argv[5]
+genes_gtf = sys.argv[5]
 gtex_donor_info_file = sys.argv[6]
 genotype_fam_file = sys.argv[7]
+borzoi_results_dir = sys.argv[8]
 
-protein_coding_genes_dictionary = extract_dictionary_list_of_protein_coding_genes(gtex_v10_pc_genes_gtf)
+borzoi_genes_dictionary = extract_dictionary_of_borzoi_genes(borzoi_results_dir)
+gene_info_dicti = extract_dictionary_list_of_gtf_genes(genes_gtf)
 gtex_id_to_ancestry_labels = load_in_ancestry_labels(gtex_donor_info_file)
 genotyped_individuals = load_in_genotyped_individuals(genotype_fam_file)
 
@@ -153,6 +220,10 @@ genotyped_individuals = load_in_genotyped_individuals(genotype_fam_file)
 ###############################
 # Load covariates (all samples, full covariate set)
 cov_mat, ordered_cov_sample_names, ordered_cov_names = load_in_covariate_data(input_covariate_file)
+
+valid_chroms = {}
+for chrom_num in range(1,23):
+	valid_chroms['chr' + str(chrom_num)] = 1
 n_all_samples = len(ordered_cov_sample_names)
 
 cov_design = np.transpose(cov_mat)
@@ -209,7 +280,15 @@ for line in f:
 		print('assumptioneorronror')
 		pdb.set_trace()
 
-	if gene_id.split('.')[0] not in protein_coding_genes_dictionary:
+	if gene_id.split('.')[0] not in borzoi_genes_dictionary:
+		continue
+
+	if data[0] not in valid_chroms:
+		print('assumption errorr!')
+		pdb.set_trace()
+
+	if gene_id.split('.')[0] not in gene_info_dicti:
+		print('Gene ' + gene_id + ' not found in gtf file. Gene skipped.')
 		continue
 
 	expr_vec = np.asarray(data[4:]).astype(float)
@@ -234,6 +313,6 @@ f.close()
 t_afr.close()
 t_eur.close()
 
-print('Protein-coding genes processed: ' + str(n_genes_written))
+print('Genes processed: ' + str(n_genes_written))
 print('Zero-variance genes skipped (AFR): ' + str(n_afr_skipped))
 print('Zero-variance genes skipped (EUR): ' + str(n_eur_skipped))

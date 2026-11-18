@@ -13,93 +13,63 @@ import gzip
 
 
 
-def extract_dictionary_list_of_protein_coding_genes(pc_genes_gtf):
+def extract_dictionary_list_of_gtf_genes(pc_genes_gtf):
 	valid_chroms = {}
 	for chrom_num in range(1,23):
 		valid_chroms['chr' + str(chrom_num)] = 1
 
 
 	f = open(pc_genes_gtf)
+
 	dicti = {}
 	for line in f:
+		if line.startswith('#'):
+			continue
 		line = line.rstrip()
 		data = line.split('\t')
 		if data[0] not in valid_chroms:
 			continue
-		ens_id = data[8].split(';')[0].split('"')[1]
+		if data[2] != 'gene':
+			continue
+
+		# Parse attribute field (e.g. 'gene_id "ENSG..."; gene_type "protein_coding"; ...')
+		attributes = {}
+		for attr in data[8].split(';'):
+			attr = attr.strip()
+			if attr == '':
+				continue
+			key, value = attr.split(' ', 1)
+			attributes[key] = value.strip('"')
+
+		# Only keep protein coding genes
+		'''
+		if attributes['gene_type'] != 'protein_coding':
+			continue
+		'''
+			
+		ens_id = attributes['gene_id']
 		if ens_id.startswith('ENSG') == False:
 			print('assumption oernroro')
 			pdb.set_trace()
-		strand = data[6]
-		if strand not in ['+', '-']:
-			print('assumption oerororo')
+		if ens_id.split('.')[0] in dicti:
+			print('repeat gene error')
 			pdb.set_trace()
-		dicti[ens_id.split('.')[0]] = strand
+		# TSS is gene start on + strand and gene end on - strand (1-based gtf coordinates)
+		strand = data[6]
+		if strand == '+':
+			tss = int(data[3])
+		elif strand == '-':
+			tss = int(data[4])
+		else:
+			print('strand assumption error')
+			pdb.set_trace()
+		dicti[ens_id.split('.')[0]] = (data[0], tss, strand)
 
 	f.close()
 
 	return dicti
 
 
-
-
-def load_in_eqtl_data(orig_eqtl_sumstats_h5_stem, chrom_num, pc_genes):
-	filer = orig_eqtl_sumstats_h5_stem + str(chrom_num) + '.parquet'
-	pf = pq.ParquetFile(filer)
-	mapping = {}
-	for rg in range(pf.num_row_groups):
-		table = pf.read_row_group(
-			rg,
-			columns=['gene_id', 'variant_id', 'tss_distance', 'af', 'slope', 'slope_se', 'ma_count']
-		)
-
-		if table.num_columns == 0:
-			continue
-
-		gene_col = table['gene_id']
-		variant_col = table['variant_id']
-		dist_col = table['tss_distance']
-		af_col = table['af']
-		slope_col = table['slope']
-		slope_se_col = table['slope_se']
-
-
-		gene_ids = table['gene_id'].to_pylist()
-		variant_ids = table['variant_id'].to_pylist()
-		tss_dists = table['tss_distance'].to_pylist()
-		afs = table['af'].to_pylist()
-		ma_counts = table['ma_count'].to_pylist()
-		slopes = table['slope'].to_pylist()
-		slope_ses = table['slope_se'].to_pylist()
-
-		for ii, gene_id_full in enumerate(gene_ids):
-			gene_id = gene_id_full.split('.')[0]
-			if gene_id not in pc_genes:
-				continue
-
-			maf = afs[ii]
-			if maf > 0.5:
-				maf = 1.0 - maf
-			line_tss_dist = tss_dists[ii]
-			if np.abs(line_tss_dist) > 100000:
-				continue
-			variant_id = variant_ids[ii]
-			var_info = variant_id.split('_')
-			if len(var_info[2]) != 1 or len(var_info[3]) != 1:
-				continue
-			if slopes[ii] is None or slope_ses[ii] is None:
-				continue
-			if slope_ses[ii] == 0:
-				continue
-
-			if gene_id not in mapping:
-				mapping[gene_id] = {}
-			zed = slopes[ii]/slope_ses[ii]
-			if variant_id in mapping[gene_id]:
-				print('repeat snp error')
-				pdb.set_trace()
-			mapping[gene_id][variant_id] = (gene_id, variant_id, chrom_num, var_info[1], var_info[2], var_info[3], slopes[ii], slope_ses[ii], afs[ii], line_tss_dist)
-	return mapping
 
 
 
@@ -145,47 +115,46 @@ def create_mapping_from_variant_id_to_snp_info(snp_array, a0_arr, a1_arr, chrom_
 		dicti[snp_id] = (a0_arr[ii], a1_arr[ii], chrom_arr[ii], pos_arr[ii])
 	return dicti
 
-def extract_ordered_variants_to_test_on_gene(rsid_to_genotype_index, rsid_to_snp_info, var_to_est_eqtl_effects):
-	unique_vars = np.unique([*var_to_est_eqtl_effects])
-	final_vars = []
-	for var in unique_vars:
-		if var not in rsid_to_genotype_index:
-			continue
-		geno_alleles = (rsid_to_snp_info[var][0], rsid_to_snp_info[var][1])
-
-		passing = False
-		if var in var_to_est_eqtl_effects:
-			passing = True
-			eqtl_alleles = var_to_est_eqtl_effects[var][4:6]
-			if set(geno_alleles) != set(eqtl_alleles):
-				passing = False
-
-		if passing == False:
-			print('hit!!!!')
-			continue
-		final_vars.append(var)
-	return np.asarray(final_vars)
-
-
-def load_in_snp_gene_eqtl_data(ordered_cis_variants, var_to_est_eqtl_effects):
-	effects = []
-	alleles = []
-	effect_ses = []
-	mafs = []
-	distys = []
-
-	for variant_id in ordered_cis_variants:
-		if variant_id not in var_to_est_eqtl_effects:
-			print('assumpriontonoernorr')
+def count_bim_col5_alleles_from_raw_bed(bed_file, n_samples, variant_index):
+	# Decode one variant directly from the plink1 .bed (variant-major) file.
+	# 2-bit codes (low bits first): 00 = hom bim col5 allele, 01 = missing, 10 = het, 11 = hom bim col6 allele
+	bytes_per_variant = (n_samples + 3) // 4
+	with open(bed_file, 'rb') as fh:
+		magic = fh.read(3)
+		if magic != b'\x6c\x1b\x01':
+			print('assumption error: unexpected .bed magic bytes / not variant-major')
 			pdb.set_trace()
+		fh.seek(3 + variant_index*bytes_per_variant)
+		raw = np.frombuffer(fh.read(bytes_per_variant), dtype=np.uint8)
+	codes = np.stack([(raw >> (2*k)) & 3 for k in range(4)], axis=1).reshape(-1)[:n_samples]
+	lookup = np.asarray([2.0, np.nan, 1.0, 0.0])
+	return lookup[codes]
 
-		var_info = var_to_est_eqtl_effects[variant_id]
-		effects.append(var_info[6])
-		effect_ses.append(var_info[7])
-		alleles.append(var_info[4] + '_' + var_info[5])
-		mafs.append(var_info[8])
-		distys.append(var_info[9])
-	return np.asarray(effects), np.asarray(alleles), np.asarray(effect_ses), np.asarray(mafs), np.asarray(distys)
+
+def check_alt_allele_dosage_direction(bed_file, G, bim, n_check=20):
+	# Verifies that (2.0 - G) equals the count of the ALT allele (from the variant id) for a spread of variants
+	n_variants = G.shape[0]
+	n_samples = G.shape[1]
+	check_indices = np.unique(np.linspace(0, n_variants - 1, n_check).astype(int))
+	bim_snps = np.asarray(bim['snp'])
+	bim_a0 = np.asarray(bim['a0'])
+	for variant_index in check_indices:
+		# bim col5 (pandas_plink a0) should be the ALT allele in the variant id
+		if bim_a0[variant_index] != bim_snps[variant_index].split('_')[3]:
+			print('allele direction error: bim col5 is not ALT for ' + bim_snps[variant_index])
+			pdb.set_trace()
+		raw_alt_count = count_bim_col5_alleles_from_raw_bed(bed_file, n_samples, variant_index)
+		script_alt_count = 2.0 - G[variant_index, :].compute()
+		if np.array_equal(raw_alt_count, script_alt_count, equal_nan=True) == False:
+			print('allele direction error: 2.0 - G does not equal ALT allele count for ' + bim_snps[variant_index])
+			pdb.set_trace()
+	return
+
+
+def extract_ordered_variants_in_cis_window(bim_snps, bim_pos, tss, window_size=100000):
+	# All variants (on this chromosome's plink file) within +/- window_size bp of the TSS, in genotype-file order
+	in_window = np.abs(bim_pos - tss) <= window_size
+	return bim_snps[in_window], np.where(in_window)[0]
 
 
 ########################
@@ -194,17 +163,16 @@ def load_in_snp_gene_eqtl_data(ordered_cis_variants, var_to_est_eqtl_effects):
 expression_file = sys.argv[1]
 genotype_sample_mapping_file = sys.argv[2]
 plink_stem = sys.argv[3]
-orig_eqtl_sumstats_h5_stem = sys.argv[4]
+gene_gtf_file = sys.argv[4]
 new_eqtl_sumstats_output_file = sys.argv[5]
-gtex_v10_pc_genes_gtf = sys.argv[6]
 
 
 # Open output file handle
 t = gzip.open(new_eqtl_sumstats_output_file,'wt')
 t.write('gene\tvariant\tchr\tsnp_pos\tA0\tA1\teqtl_effect_size\teqtl_effect_size_se\tN\taf\tdist_to_tss\tgenotype_sdev\n')
 
-# Extract dictionary list of protein coding genes
-pc_genes = extract_dictionary_list_of_protein_coding_genes(gtex_v10_pc_genes_gtf)
+# Extract dictionary list of genes
+gene_info_dicti = extract_dictionary_list_of_gtf_genes(gene_gtf_file)
 
 # Extract genotype-sample indices corresponding to this tissue
 ordered_genotype_indices = (np.loadtxt(genotype_sample_mapping_file)).astype(int)
@@ -212,10 +180,6 @@ ordered_genotype_indices = (np.loadtxt(genotype_sample_mapping_file)).astype(int
 for chrom_num in range(1,23):
 
 	print(chrom_num, flush=True)
-
-	####################################
-	# First, load in existing eQTL data for this tissue (used to control which vg-pairs we test)
-	eqtl_data_obj = load_in_eqtl_data(orig_eqtl_sumstats_h5_stem, chrom_num, pc_genes)
 
 	####################################
 	# Second, Load in per-chrom-genotype data
@@ -227,11 +191,14 @@ for chrom_num in range(1,23):
 	rsid_to_genotype_index = create_mapping_from_variant_id_to_genotype_index(np.asarray(bim['snp']))
 	# Create mapping from rsid to a0, a1
 	rsid_to_snp_info = create_mapping_from_variant_id_to_snp_info(np.asarray(bim['snp']), np.asarray(bim['a0']), np.asarray(bim['a1']), np.asarray(bim['chrom']), np.asarray(bim['pos']))
+	bim_snps = np.asarray(bim['snp'])
+	bim_pos = np.asarray(bim['pos']).astype(int)
+	# Confirm that (2.0 - G), used below, counts the ALT allele (= A1 column written to output)
+	check_alt_allele_dosage_direction(plink_stem + str(chrom_num) + '.bed', G, bim)
 
 
 	####################################
 	# Third, loop through genes
-
 	f = open(expression_file)
 	var_counter = 0
 	skip_counter = 0
@@ -251,38 +218,30 @@ for chrom_num in range(1,23):
 		# Filter out genes not in existing eqtl data
 		full_gene_id = data[3]
 		short_gene_id = full_gene_id.split('.')[0]
-		if short_gene_id not in eqtl_data_obj:
-			continue
 
-		gene_strand = pc_genes[short_gene_id]
+		if short_gene_id not in gene_info_dicti:
+			print('assumption error: gene not in gtf: ' + short_gene_id)
+			pdb.set_trace()
+		gene_info = gene_info_dicti[short_gene_id]
+		tss = gene_info[1]
+		gene_strand = gene_info[2]
+		gene_chrom_num = gene_info[0]
+		if line_chrom != gene_chrom_num:
+			print('assumption error: gene chrom should match line chrom')
+			pdb.set_trace()
+
 
 		# Extract relevent fields for gene
-		tss = int(data[2])
+		tss2 = int(data[2])
+
 		expr_vec = np.asarray(data[4:]).astype(float)
 
+		# Extract all variants within 100KB of the TSS
+		ordered_cis_variants, cis_genotype_indices = extract_ordered_variants_in_cis_window(bim_snps, bim_pos, tss, window_size=100000)
+		if len(ordered_cis_variants) == 0:
+			print('no cis variants for gene: ' + short_gene_id)
+			continue
 
-		# Extract ordered list of variants used previously for eQTL calling
-		ordered_cis_variants = extract_ordered_variants_to_test_on_gene(rsid_to_genotype_index, rsid_to_snp_info, eqtl_data_obj[short_gene_id])
-
-
-		# Load in existing eqtl data for the gene
-		orig_eqtl_effects, orig_eqtl_variant_alleles, orig_eqtl_effect_ses, orig_eqtl_afs, orig_eqtl_distance = load_in_snp_gene_eqtl_data(ordered_cis_variants, eqtl_data_obj[short_gene_id])
-		
-		cis_genotype_indices = []
-		for var_index, cis_variant in enumerate(ordered_cis_variants):
-			cis_genotype_indices.append(rsid_to_genotype_index[cis_variant])
-			snp_info = rsid_to_snp_info[cis_variant]
-			geno_alleles = snp_info[:2]
-			geno_allele_string = geno_alleles[0] + '_' + geno_alleles[1]
-			geno_allele_alt_string = geno_alleles[1] + '_' + geno_alleles[0]
-
-			if geno_allele_alt_string != orig_eqtl_variant_alleles[var_index]:
-				print('assumptionerororo')
-				pdb.set_trace()
-
-
-		# Extract genotype
-		cis_genotype_indices = np.asarray(cis_genotype_indices)
 		# Extract genotype matrix
 		geno_mat = (G[cis_genotype_indices,:].compute())[:, ordered_genotype_indices]
 
@@ -347,7 +306,6 @@ for chrom_num in range(1,23):
 
 				t.write(short_gene_id + '\t' + cis_variant + '\t' + str(chrom_num) + '\t' + snp_pos + '\t' + snp_a0 + '\t' + snp_a1 + '\t' + str(eqtl_effect) + '\t' + str(eqtl_effect_se) + '\t')
 				t.write(str(N_samp) + '\t' + str(var_af) + '\t' + str(dist_to_tss) + '\t' + str(genotype_sdev) + '\n')
-
 	f.close()
 	print(skip_counter, var_counter, flush=True)
 
