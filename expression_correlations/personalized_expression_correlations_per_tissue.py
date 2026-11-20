@@ -20,9 +20,6 @@ sldmc_estimate_column = 'mean'
 # Number of Monte Carlo draws of the true causal effects used to compute the directional FSR
 n_fsr_samples = 1000
 
-# Minimum number of usable cis variants for a gene to be analyzed
-min_cis_variants = 10
-
 
 def extract_bin_index(value, bins):
 	for bin_iter in range(len(bins)-1):
@@ -357,7 +354,7 @@ def compute_predicted_cis_snp_heritability(rescaled_pred_expr, per_snp_sd):
 	return np.var(rescaled_pred_expr) + np.sum(np.square(per_snp_sd))
 
 
-def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bins, chunk_size=10000):
+def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bins, min_cis_variants, chunk_size=10000):
 	# Mean in-sample genotype variance (2p(1-p) under HWE; the square of the sdev used to standardize)
 	# across variant-gene pairs falling in each finer magnitude bin, computed from this tissue's genotype
 	# data. Uses the same genes, variants and filters as the main loop (genes with expression,
@@ -423,10 +420,23 @@ def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genoty
 	return bin_mean_geno_vars, bin_counts
 
 
-def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, output_file):
+def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, min_cis_variants, output_file, variant_gene_pair_output_file=None):
 	# Initialize output file
 	t = open(output_file,'w')
 	t.write('gene_id\traw_expression_correlation\trescaled_expression_correlation\texpression_FSR\texpression_FSR_af_specific\tcis_snp_h2\tcis_snp_h2_pvalue\tcis_snp_h2_he\tcis_snp_h2_he_se\tpredicted_cis_snp_h2\tpredicted_cis_snp_h2_af_specific\trescaled_predicted_expression_variance\tpredicted_r_variance\tpredicted_r_variance_af_specific\tn_samples\tn_cis_variants\traw_predicted_expression_variance\tmax_abs_borzoi_effect\tmean_abs_borzoi_effect\n')
+
+	# Optional: one line per variant-gene pair used in the prediction (only for genes written to output_file).
+	# ref / alt come from the GTEx-format variant id (chr_pos_REF_ALT_b38) = a0 / a1 of the borzoi effects file.
+	# borzoi_logSED is the raw borzoi effect as given in the borzoi effects file: log(ALT pred) - log(REF pred),
+	# i.e. per copy of the ALT allele (effect_allele), unstandardized and not S-LDMC rescaled.
+	# Written gzipped if the file name ends in .gz
+	pair_t = None
+	if variant_gene_pair_output_file is not None:
+		if variant_gene_pair_output_file.endswith('.gz'):
+			pair_t = gzip.open(variant_gene_pair_output_file,'wt')
+		else:
+			pair_t = open(variant_gene_pair_output_file,'w')
+		pair_t.write('gene_id\tvariant_id\tchrom\tpos\tref\talt\teffect_allele\tborzoi_logSED\n')
 
 	n_genes_analyzed = 0
 
@@ -467,6 +477,8 @@ def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_i
 
 			# Load in borzoi effects for gene (unstandardized: per allele)
 			borzoi_effects_unstandardized, borzoi_variant_alleles = load_in_snp_gene_data(ordered_cis_variants, gene_id_to_est_borzoi_effects[gene_id])
+			# Unflipped copy (borzoi-file orientation) for the optional variant-gene pair output
+			borzoi_effects_as_given = np.copy(borzoi_effects_unstandardized)
 
 			# Genotype indices of cis variants
 			cis_genotype_indices = []
@@ -560,7 +572,21 @@ def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_i
 			t.flush()
 			n_genes_analyzed = n_genes_analyzed + 1
 
+			# Variant-gene pairs that went into this gene's prediction (same variants as genotype_mat columns)
+			if pair_t is not None:
+				for var_index in np.where(valid_snps)[0]:
+					cis_variant = ordered_cis_variants[var_index]
+					var_info = gene_id_to_est_borzoi_effects[gene_id][cis_variant]
+					ref_allele = borzoi_variant_alleles[var_index,0]
+					alt_allele = borzoi_variant_alleles[var_index,1]
+					pair_t.write(gene_id + '\t' + cis_variant + '\t' + str(var_info[2]) + '\t' + str(var_info[3]) + '\t' + ref_allele + '\t' + alt_allele + '\t' + alt_allele + '\t' + str(borzoi_effects_as_given[var_index]) + '\n')
+				# (no per-gene flush when gzipped: each gzip flush forces a sync point and hurts compression)
+				if variant_gene_pair_output_file.endswith('.gz') == False:
+					pair_t.flush()
+
 	t.close()
+	if pair_t is not None:
+		pair_t.close()
 	print(str(n_genes_analyzed) + ' genes analyzed')
 	return
 
@@ -578,6 +604,8 @@ parser.add_argument('--expression-file', dest='expression_file', required=True, 
 parser.add_argument('--plink-genotype-stem', dest='plink_genotype_stem', required=True, help='Stem of chromosome-specific plink genotype files (chromosome number and .bed/.bim/.fam are appended).')
 parser.add_argument('--genotype-sample-mapping-file', dest='genotype_sample_mapping_file', required=True, help='File mapping genotype sample indices to expression samples for this tissue.')
 parser.add_argument('--expression-correlation-output-file', dest='expression_correlation_output_file', required=True, help='Output file containing personalized expression prediction correlations.')
+parser.add_argument('--min-cis-variants', dest='min_cis_variants', type=int, default=1, help='Minimum number of usable cis variants (after allele matching and missingness/zero-variance filtering) for a gene to be analyzed.')
+parser.add_argument('--variant-gene-pair-output-file', dest='variant_gene_pair_output_file', default=None, help='Optional. If given, write one line per variant-gene pair used in the prediction (only for analyzed genes): gene_id, variant_id, chrom, pos, ref, alt, effect_allele (= alt), borzoi_logSED (raw borzoi effect per copy of alt, as in the borzoi effects file).')
 args = parser.parse_args()
 
 sldmc_summary_file = args.sldmc_summary_file
@@ -586,6 +614,11 @@ expression_file = args.expression_file
 plink_genotype_stem = args.plink_genotype_stem
 genotype_sample_mapping_file = args.genotype_sample_mapping_file
 expression_correlation_output_file = args.expression_correlation_output_file
+min_cis_variants = args.min_cis_variants
+variant_gene_pair_output_file = args.variant_gene_pair_output_file
+if min_cis_variants < 1:
+	print('assumption eroror: --min-cis-variants must be at least 1')
+	sys.exit(1)
 
 
 np.random.seed(1)
@@ -620,7 +653,7 @@ if len(expr_sample_names) != len(genotype_sample_indices):
 # The numerator is bin_resid_vars; the denominator is the mean in-sample genotype variance over the
 # variant-gene pairs in the bin, computed from this tissue's genotype data.
 print('Computing per-bin mean genotype variance')
-bin_mean_geno_vars, bin_pair_counts = compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, finer_borzoi_magnitude_bins)
+bin_mean_geno_vars, bin_pair_counts = compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, finer_borzoi_magnitude_bins, min_cis_variants)
 bin_tau2s = bin_resid_vars/bin_mean_geno_vars
 for bin_iter in range(n_bins):
 	print(finer_borzoi_magnitude_category_prefix + str(bin_iter) + ': n_pairs=' + str(int(bin_pair_counts[bin_iter])) + ' mean_geno_var=' + str(bin_mean_geno_vars[bin_iter]) + ' tau2=' + str(bin_tau2s[bin_iter]))
@@ -629,4 +662,4 @@ for bin_iter in range(n_bins):
 ###########################
 # Run expression correlation analysis
 ###########################
-run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, expression_correlation_output_file)
+run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, min_cis_variants, expression_correlation_output_file, variant_gene_pair_output_file=variant_gene_pair_output_file)

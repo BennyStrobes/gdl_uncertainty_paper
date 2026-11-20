@@ -42,6 +42,10 @@ eur_allfit_per_tissue_personalized_expression_dir=${expression_correlations_root
 # Visualizations of the African-ancestry results (single-ancestry plots + EUR vs AFR comparisons)
 visualize_afr_personalized_expression_dir=${expression_correlations_root_directory}"visualize_personalized_expression_afr/"
 
+# Whole Blood only: every variant-gene pair used in the personalized expression prediction (plus a copy of the
+# per-gene output, kept separate from the main-loop results)
+whole_blood_variant_gene_pairs_dir=${expression_correlations_root_directory}"whole_blood_variant_gene_pairs/"
+
 
 
 #########################
@@ -51,7 +55,7 @@ if false; then
 tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
     borzoi_results_file=${borzoi_predicted_effect_sizes_directory}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
     expression_file=${gtex_expression_directory}${target_tissue}".v8.residualized_expression_renormalized.bed"
-    plink_genotype_stem=${gtex_genotype_directory}"gtex_v9_eqtl_chr"
+    plink_genotype_stem=${gtex_genotype_directory}"gtex_v8_eqtl_chr"
     genotype_sample_mapping_file=${gtex_genotype_directory}"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
 
     expression_correlation_output_file=${per_tissue_personalized_expression_dir}${target_tissue}"_"${target_sample}"_personalized_expression_prediction.txt"
@@ -59,6 +63,28 @@ tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r ori
     sbatch personalized_expression_correlations_per_tissue.sh $sldmc_summary_file $borzoi_results_file $expression_file $plink_genotype_stem $genotype_sample_mapping_file $expression_correlation_output_file
 done
 fi
+
+
+#########################
+# Whole Blood only: same analysis as above, additionally writing every variant-gene pair used in the
+# prediction (gene_id, variant_id, chrom, pos, ref, alt, effect_allele, borzoi_logSED = raw borzoi effect per
+# copy of alt; only for genes that are analyzed)
+#########################
+if false; then
+target_tissue="Whole_Blood"
+target_sample="GTEX-1LB8K-0005-SM-DIPED.1"
+mkdir -p ${whole_blood_variant_gene_pairs_dir}
+
+borzoi_results_file=${borzoi_predicted_effect_sizes_directory}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
+expression_file=${gtex_expression_directory}${target_tissue}".v8.residualized_expression_renormalized.bed"
+plink_genotype_stem=${gtex_genotype_directory}"gtex_v8_eqtl_chr"
+genotype_sample_mapping_file=${gtex_genotype_directory}"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
+
+expression_correlation_output_file=${whole_blood_variant_gene_pairs_dir}${target_tissue}"_"${target_sample}"_personalized_expression_prediction.txt"
+variant_gene_pair_output_file=${whole_blood_variant_gene_pairs_dir}${target_tissue}"_"${target_sample}"_variant_gene_pairs.txt.gz"
+sbatch personalized_expression_correlations_per_tissue.sh $sldmc_summary_file $borzoi_results_file $expression_file $plink_genotype_stem $genotype_sample_mapping_file $expression_correlation_output_file $variant_gene_pair_output_file
+fi
+
 
 
 #########################
@@ -81,7 +107,7 @@ if false; then
 tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
     borzoi_results_file=${borzoi_predicted_effect_sizes_directory}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
     afr_expression_file=${gtex_expression_directory}${target_tissue}".v8_afr.residualized_expression_renormalized.bed"
-    plink_genotype_stem=${gtex_genotype_directory}"gtex_v9_eqtl_chr"
+    plink_genotype_stem=${gtex_genotype_directory}"gtex_v8_eqtl_chr"
     afr_genotype_sample_mapping_file=${gtex_genotype_directory}"genotype_sample_mapping_to_"${target_tissue}"_afr_expression_samples.txt"
     eur_genotype_sample_mapping_file=${gtex_genotype_directory}"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
 
@@ -90,6 +116,7 @@ tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r ori
     sbatch african_personalized_expression_correlations_per_tissue.sh $sldmc_summary_file $borzoi_results_file $afr_expression_file $plink_genotype_stem $afr_genotype_sample_mapping_file $eur_genotype_sample_mapping_file $expression_correlation_output_file
 done
 fi
+
 
 
 #########################
@@ -102,7 +129,7 @@ if false; then
 tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
     borzoi_results_file=${borzoi_predicted_effect_sizes_directory}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
     eur_allfit_expression_file=${gtex_expression_directory}${target_tissue}".v8_eur_allfit.residualized_expression_renormalized.bed"
-    plink_genotype_stem=${gtex_genotype_directory}"gtex_v9_eqtl_chr"
+    plink_genotype_stem=${gtex_genotype_directory}"gtex_v8_eqtl_chr"
     eur_allfit_genotype_sample_mapping_file=${gtex_genotype_directory}"genotype_sample_mapping_to_"${target_tissue}"_eur_allfit_expression_samples.txt"
 
     expression_correlation_output_file=${eur_allfit_per_tissue_personalized_expression_dir}${target_tissue}"_"${target_sample}"_personalized_expression_prediction.txt"
@@ -110,6 +137,7 @@ tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r ori
     sbatch personalized_expression_correlations_per_tissue.sh $sldmc_summary_file $borzoi_results_file $eur_allfit_expression_file $plink_genotype_stem $eur_allfit_genotype_sample_mapping_file $expression_correlation_output_file
 done
 fi
+
 
 
 #########################

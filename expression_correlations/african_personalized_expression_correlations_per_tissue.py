@@ -36,9 +36,6 @@ sldmc_estimate_column = 'mean'
 # Number of Monte Carlo draws of the true causal effects used to compute the directional FSR
 n_fsr_samples = 1000
 
-# Minimum number of usable cis variants for a gene to be analyzed
-min_cis_variants = 10
-
 
 def extract_bin_index(value, bins):
 	for bin_iter in range(len(bins)-1):
@@ -373,7 +370,7 @@ def compute_predicted_cis_snp_heritability(rescaled_pred_expr, per_snp_sd):
 	return np.var(rescaled_pred_expr) + np.sum(np.square(per_snp_sd))
 
 
-def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bins, chunk_size=10000):
+def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bins, min_cis_variants, chunk_size=10000):
 	# Mean in-sample genotype variance (2p(1-p) under HWE; the square of the sdev used to standardize)
 	# across variant-gene pairs falling in each finer magnitude bin, computed from this tissue's genotype
 	# data. Uses the same genes, variants and filters as the main loop (genes with expression,
@@ -439,7 +436,7 @@ def compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, genoty
 	return bin_mean_geno_vars, bin_counts
 
 
-def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, output_file):
+def run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, min_cis_variants, output_file):
 	# Initialize output file
 	t = open(output_file,'w')
 	t.write('gene_id\traw_expression_correlation\trescaled_expression_correlation\texpression_FSR\texpression_FSR_af_specific\tcis_snp_h2\tcis_snp_h2_pvalue\tcis_snp_h2_he\tcis_snp_h2_he_se\tpredicted_cis_snp_h2\tpredicted_cis_snp_h2_af_specific\trescaled_predicted_expression_variance\tpredicted_r_variance\tpredicted_r_variance_af_specific\tn_samples\tn_cis_variants\traw_predicted_expression_variance\tmax_abs_borzoi_effect\tmean_abs_borzoi_effect\n')
@@ -601,6 +598,7 @@ parser.add_argument('--plink-genotype-stem', dest='plink_genotype_stem', require
 parser.add_argument('--genotype-sample-mapping-file', dest='genotype_sample_mapping_file', required=True, help='File mapping genotype sample indices to AFR expression samples for this tissue.')
 parser.add_argument('--eur-genotype-sample-mapping-file', dest='eur_genotype_sample_mapping_file', required=True, help='File mapping genotype sample indices to European expression samples for this tissue (used only to compute the per-allele residual variances tau^2).')
 parser.add_argument('--expression-correlation-output-file', dest='expression_correlation_output_file', required=True, help='Output file containing personalized expression prediction correlations.')
+parser.add_argument('--min-cis-variants', dest='min_cis_variants', type=int, default=1, help='Minimum number of usable cis variants (after allele matching and missingness/zero-variance filtering) for a gene to be analyzed.')
 args = parser.parse_args()
 
 sldmc_summary_file = args.sldmc_summary_file
@@ -610,6 +608,10 @@ plink_genotype_stem = args.plink_genotype_stem
 genotype_sample_mapping_file = args.genotype_sample_mapping_file
 eur_genotype_sample_mapping_file = args.eur_genotype_sample_mapping_file
 expression_correlation_output_file = args.expression_correlation_output_file
+min_cis_variants = args.min_cis_variants
+if min_cis_variants < 1:
+	print('assumption eroror: --min-cis-variants must be at least 1')
+	sys.exit(1)
 
 
 np.random.seed(1)
@@ -653,7 +655,7 @@ if len(expr_sample_names) != len(genotype_sample_indices):
 # (Gene filter uses the AFR expression genes; the AFR and European residualized expression files for a
 # tissue are built from the same input with the same protein-coding filter, so they contain the same genes.)
 print('Computing per-bin mean genotype variance in European samples (' + str(len(eur_genotype_sample_indices)) + ' samples)')
-bin_mean_geno_vars, bin_pair_counts = compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, eur_genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, finer_borzoi_magnitude_bins)
+bin_mean_geno_vars, bin_pair_counts = compute_per_bin_mean_genotype_variance(gene_id_to_est_borzoi_effects, eur_genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, finer_borzoi_magnitude_bins, min_cis_variants)
 bin_tau2s = bin_resid_vars/bin_mean_geno_vars
 for bin_iter in range(n_bins):
 	print(finer_borzoi_magnitude_category_prefix + str(bin_iter) + ': n_pairs=' + str(int(bin_pair_counts[bin_iter])) + ' mean_geno_var=' + str(bin_mean_geno_vars[bin_iter]) + ' tau2=' + str(bin_tau2s[bin_iter]))
@@ -662,4 +664,4 @@ for bin_iter in range(n_bins):
 ###########################
 # Run expression correlation analysis
 ###########################
-run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, expression_correlation_output_file)
+run_expression_correlations(gene_id_to_est_borzoi_effects, genotype_sample_indices, gene_id_to_expression_vector, plink_genotype_stem, bin_slopes, bin_resid_vars, bin_tau2s, min_cis_variants, expression_correlation_output_file)
