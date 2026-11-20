@@ -109,6 +109,7 @@ fi
 
 
 
+
 ###################
 # Part B (Secondary Analysis): Generate data restricted to African ancestry individuals
 ###################

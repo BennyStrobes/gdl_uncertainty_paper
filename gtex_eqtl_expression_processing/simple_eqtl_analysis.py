@@ -151,9 +151,25 @@ def check_alt_allele_dosage_direction(bed_file, G, bim, n_check=20):
 	return
 
 
-def extract_ordered_variants_in_cis_window(bim_snps, bim_pos, tss, window_size=100000):
-	# All variants (on this chromosome's plink file) within +/- window_size bp of the TSS, in genotype-file order
-	in_window = np.abs(bim_pos - tss) <= window_size
+def extract_snv_mask(bim_snps, bim_a0, bim_a1):
+	# True for SNVs (single-base REF and ALT, both in ACGT); False for indels / other variants
+	valid_bases = {'A':1, 'C':1, 'G':1, 'T':1}
+	is_snv = np.zeros(len(bim_snps), dtype=bool)
+	for ii, snp_id in enumerate(bim_snps):
+		snp_info = snp_id.split('_')
+		ref = snp_info[2]
+		alt = snp_info[3]
+		if ref != bim_a1[ii] or alt != bim_a0[ii]:
+			print('assumption error: variant id alleles do not match bim alleles for ' + snp_id)
+			pdb.set_trace()
+		if len(ref) == 1 and len(alt) == 1 and ref in valid_bases and alt in valid_bases:
+			is_snv[ii] = True
+	return is_snv
+
+
+def extract_ordered_variants_in_cis_window(bim_snps, bim_pos, bim_is_snv, tss, window_size=100000):
+	# All SNVs (on this chromosome's plink file) within +/- window_size bp of the TSS, in genotype-file order
+	in_window = (np.abs(bim_pos - tss) <= window_size) & bim_is_snv
 	return bim_snps[in_window], np.where(in_window)[0]
 
 
@@ -193,6 +209,9 @@ for chrom_num in range(1,23):
 	rsid_to_snp_info = create_mapping_from_variant_id_to_snp_info(np.asarray(bim['snp']), np.asarray(bim['a0']), np.asarray(bim['a1']), np.asarray(bim['chrom']), np.asarray(bim['pos']))
 	bim_snps = np.asarray(bim['snp'])
 	bim_pos = np.asarray(bim['pos']).astype(int)
+	# Only test SNVs (filter out indels)
+	bim_is_snv = extract_snv_mask(bim_snps, np.asarray(bim['a0']), np.asarray(bim['a1']))
+	print('SNVs: ' + str(np.sum(bim_is_snv)) + ' of ' + str(len(bim_is_snv)) + ' variants', flush=True)
 	# Confirm that (2.0 - G), used below, counts the ALT allele (= A1 column written to output)
 	check_alt_allele_dosage_direction(plink_stem + str(chrom_num) + '.bed', G, bim)
 
@@ -236,8 +255,8 @@ for chrom_num in range(1,23):
 
 		expr_vec = np.asarray(data[4:]).astype(float)
 
-		# Extract all variants within 100KB of the TSS
-		ordered_cis_variants, cis_genotype_indices = extract_ordered_variants_in_cis_window(bim_snps, bim_pos, tss, window_size=100000)
+		# Extract all SNVs within 100KB of the TSS
+		ordered_cis_variants, cis_genotype_indices = extract_ordered_variants_in_cis_window(bim_snps, bim_pos, bim_is_snv, tss, window_size=100000)
 		if len(ordered_cis_variants) == 0:
 			print('no cis variants for gene: ' + short_gene_id)
 			continue

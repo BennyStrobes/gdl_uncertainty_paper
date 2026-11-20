@@ -9,6 +9,9 @@ borzoi_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/borzoi_genome_wide_run
 # Directory containing borzoi gtex target indices and names
 borzoi_gtex_unique_target_names_file=${borzoi_results_dir}"targets_gtex_v8_eqtl_only_unique_ordered.txt"
 
+# Variant-gene pairs submitted to borzoi (GTEx v10 pairs within 100kb of the v39 TSS)
+borzoi_variant_gene_pair_file="/lab-share/CHIP-Strober-e2/Public/ben/borzoi_genome_wide_run/genome_wide/input_variant_gene_pairs/variant_gene_pairs_to_test.txt"
+
 # Directory containing genotype data
 processed_genotype_data_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/gtex_eqtl_expression_processing/plink_processed_genotype/"
 
@@ -20,11 +23,12 @@ eqtl_sumstats_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/g
 
 # Gtex protein coding genes
 gtex_pc_genes_gtf="/lab-share/CHIP-Strober-e2/Public/gene_annotation_files/gencode.v39.gtex.protein_coding.genes.gtf"
+gene_gtf_file="/home/ch271704/tools/borzoi/examples/hg38/genes/gencode41/gencode41_basic_nort.gtf"
 
 # Simulation results directory (for paper visualization purposes)
-simulation_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/simulations/corr_sim_inference_results/"
-simulation_oracle_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/simulations/corr_sim_borzoi_eqtl_effects/"
-simulation_fm_stratified_oracle_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper/simulations/corr_sim_est_eqtl_effect_size_dir/"
+simulation_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper_old/simulations/corr_sim_inference_results/"
+simulation_oracle_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper_old/simulations/corr_sim_borzoi_eqtl_effects/"
+simulation_fm_stratified_oracle_results_dir="/lab-share/CHIP-Strober-e2/Public/ben/gdl_uncertainty_paper_old/simulations/corr_sim_est_eqtl_effect_size_dir/"
 
 # Baseline LD annotations directory (used for variant annotations)
 baselineLD_anno_dir="/lab-share/CHIP-Strober-e2/Public/ldsc/reference_files/1000G_EUR_Phase3_hg38/baselineLD_v2.2/"
@@ -79,7 +83,7 @@ visualize_tissue_permuted_sldmc_results_dir=${output_root}"visualize_tissue_perm
 # 2. Borzoi effects
 if false; then
 tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_identifier target_description gtex_tissue; do
-	sbatch preprocess_borzoi_data_for_sldmc.sh $gtex_pc_genes_gtf $borzoi_results_dir $borzoi_target_index $gtex_tissue $target_identifier $borzoi_output_dir
+	sbatch preprocess_borzoi_data_for_sldmc.sh $gene_gtf_file $borzoi_results_dir $borzoi_target_index $gtex_tissue $target_identifier $borzoi_output_dir
 done
 fi
 
@@ -108,7 +112,6 @@ if false; then
 sbatch generate_cross_tissue_bootstrapped_gene_sets.sh ${eqtl_sumstats_dir} ${borzoi_output_dir} ${borzoi_gtex_unique_target_names_file} ${bootstrapped_cross_tissue_gene_sets_dir}
 fi
 
-# HERE
 
 
 #################
@@ -119,7 +122,7 @@ if false; then
 tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
 	eqtl_sumstats_file=$eqtl_sumstats_dir"eqtl_results_"${target_tissue}"_sumstats.txt.gz"
 	borzoi_effect_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
-	genotype_stem=$processed_genotype_data_dir"gtex_v9_eqtl_chr"
+	genotype_stem=$processed_genotype_data_dir"gtex_v8_eqtl_chr"
 	genotype_sample_mapping_file=$processed_genotype_data_dir"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
 
 	for annotation_version in $annotation_versions; do
@@ -172,6 +175,7 @@ done
 fi
 
 
+
 #################
 # 7. Run fine-mapping based analysis
 #################
@@ -187,13 +191,14 @@ tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r ori
 done
 fi
 
+
 # b. Run S-LDMC on each tissue using the fine-mapping annotation file. Tissues without a fine-mapping
 # annotation file (e.g. not among the 49 fine-mapped GTEx tissues) are skipped.
 if false; then
 tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
 	eqtl_sumstats_file=$eqtl_sumstats_dir"eqtl_results_"${target_tissue}"_sumstats.txt.gz"
 	borzoi_effect_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
-	genotype_stem=$processed_genotype_data_dir"gtex_v9_eqtl_chr"
+	genotype_stem=$processed_genotype_data_dir"gtex_v8_eqtl_chr"
 	genotype_sample_mapping_file=$processed_genotype_data_dir"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
 
 	annotation_version="fine_mapping"
@@ -211,13 +216,13 @@ fi
 
 
 #################
-# 7. Extract ld first moments and sumstat for each tissue
+# 8. Extract ld first moments and sumstat for each tissue
 #################
 if false; then
 tail -n +2 "$borzoi_gtex_unique_target_names_file" | while IFS=$'\t' read -r orig_target_index borzoi_target_index target_sample target_description target_tissue; do
 	eqtl_sumstats_file=$eqtl_sumstats_dir"eqtl_results_"${target_tissue}"_sumstats.txt.gz"
 	borzoi_effect_file=${borzoi_output_dir}${target_tissue}"_"${target_sample}"_borzoi_effects.txt.gz"
-	genotype_stem=$processed_genotype_data_dir"gtex_v9_eqtl_chr"
+	genotype_stem=$processed_genotype_data_dir"gtex_v8_eqtl_chr"
 	genotype_sample_mapping_file=$processed_genotype_data_dir"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
 	annotation_version="default"
 
@@ -239,7 +244,7 @@ fi
 
 
 #################
-# 8.Tissue permuted run of S-LDMC
+# 9.Tissue permuted run of S-LDMC
 #################
 
 # a. Draw the permuted pairing: one row per tissue, holding that tissue plus a randomly drawn partner
@@ -261,7 +266,7 @@ tail -n +2 "$tissue_permuted_pairs_file" | while IFS=$'\t' read -r target_tissue
 	eqtl_sumstats_file=$eqtl_sumstats_dir"eqtl_results_"${target_tissue}"_sumstats.txt.gz"
 	genotype_sample_mapping_file=$processed_genotype_data_dir"genotype_sample_mapping_to_"${target_tissue}"_expression_samples.txt"
 	borzoi_effect_file=${borzoi_output_dir}${permuted_tissue}"_"${permuted_sample}"_borzoi_effects.txt.gz"
-	genotype_stem=$processed_genotype_data_dir"gtex_v9_eqtl_chr"
+	genotype_stem=$processed_genotype_data_dir"gtex_v8_eqtl_chr"
 
 	annotation_version="default"
 	borzoi_annotation_file=${borzoi_output_dir}${permuted_tissue}"_"${permuted_sample}"_annotations_"${annotation_version}".txt.gz"
@@ -272,7 +277,7 @@ fi
 
 
 #################
-# 9.Visualize results from the tissue permuted run
+# 10.Visualize results from the tissue permuted run
 #################
 if false; then
 source ~/.bashrc

@@ -9,24 +9,56 @@ import pyarrow.parquet as pq
 
 
 
-def extract_dictionary_list_of_protein_coding_genes(pc_genes_gtf):
+def extract_dictionary_list_of_valid_genes(genes_gtf):
 	valid_chroms = {}
 	for chrom_num in range(1,23):
 		valid_chroms['chr' + str(chrom_num)] = 1
 
+	f = open(genes_gtf)
 
-	f = open(pc_genes_gtf)
 	dicti = {}
 	for line in f:
+		if line.startswith('#'):
+			continue
 		line = line.rstrip()
 		data = line.split('\t')
 		if data[0] not in valid_chroms:
 			continue
-		ens_id = data[8].split(';')[0].split('"')[1]
+		if data[2] != 'gene':
+			continue
+
+		# Parse attribute field (e.g. 'gene_id "ENSG..."; gene_type "protein_coding"; ...')
+		attributes = {}
+		for attr in data[8].split(';'):
+			attr = attr.strip()
+			if attr == '':
+				continue
+			key, value = attr.split(' ', 1)
+			attributes[key] = value.strip('"')
+
+		# Only keep protein coding genes
+		'''
+		if attributes['gene_type'] != 'protein_coding':
+			continue
+		'''
+			
+		ens_id = attributes['gene_id']
 		if ens_id.startswith('ENSG') == False:
 			print('assumption oernroro')
 			pdb.set_trace()
-		dicti[ens_id.split('.')[0]] = 1
+		if ens_id.split('.')[0] in dicti:
+			print('repeat gene error')
+			pdb.set_trace()
+		# TSS is gene start on + strand and gene end on - strand (1-based gtf coordinates)
+		strand = data[6]
+		if strand == '+':
+			tss = int(data[3])
+		elif strand == '-':
+			tss = int(data[4])
+		else:
+			print('strand assumption error')
+			pdb.set_trace()
+		dicti[ens_id.split('.')[0]] = (data[0], tss, strand)
 
 	f.close()
 
@@ -141,7 +173,7 @@ def extract_info_on_each_variant_gene_pair(eqtl_sumstats_dir, tissue_name):
 ###################
 # Command line args
 ####################
-gtex_v10_pc_genes_gtf = sys.argv[1]
+genes_gtf = sys.argv[1]
 borzoi_results_dir = sys.argv[2]
 borzoi_target_index = int(sys.argv[3])
 target_tissue = sys.argv[4]
@@ -149,8 +181,8 @@ target_sample = sys.argv[5]
 borzoi_output_dir = sys.argv[6]
 
 
-# Extract dictionary list of protein coding genes
-pc_genes = extract_dictionary_list_of_protein_coding_genes(gtex_v10_pc_genes_gtf)
+# Extract dictionary list of valid genes in  genes_gtf
+valid_genes = extract_dictionary_list_of_valid_genes(genes_gtf)
 
 
 # Open output file handle
@@ -162,14 +194,16 @@ t.write('gene\tvariant\tchr\tsnp_pos\ta0\ta1\tborzoi_effect_size\n')
 for snp_chrom, snp_pos, snp_ids, gene_ids, borzoi_effects in stream_borzoi_results(borzoi_results_dir, borzoi_target_index):
 	for chrom, pos, variant_id, gene_id, borzoi_effect_size in zip(snp_chrom, snp_pos, snp_ids, gene_ids, borzoi_effects):
 		gene_name = gene_id.split('.')[0]
-		if gene_name not in pc_genes:
+		if gene_name not in valid_genes:
 			continue
 
 		var_info = variant_id.split('_')
 		if len(var_info) < 4:
-			continue
+			print('assumption error')
+			pdb.set_trace()
 		if len(var_info[2]) != 1 or len(var_info[3]) != 1:
-			continue
+			print('assumption error')
+			pdb.set_trace()
 
 		chrom_string = str(chrom)
 		if chrom_string.startswith('chr'):
